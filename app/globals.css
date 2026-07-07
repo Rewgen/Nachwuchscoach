@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: #f8fafc; /* slate-50 */
+  color: #0f172a; /* slate-900 */
+  font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Zahlen in Tabellen/Zeiten gleichbreit */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Druck: nur den markierten Bereich drucken */
+@media print {
+  body {
+    background: #fff;
+  }
+  .print-verbergen {
+    display: none !important;
+  }
+  .print-flaeche {
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+  }
+  main {
+    padding: 0 !important;
+  }
+  a {
+    text-decoration: none;
+    color: inherit;
+  }
+}
