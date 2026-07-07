@@ -11,6 +11,7 @@ import {
   Dumbbell,
   LayoutDashboard,
   ListChecks,
+  LogOut,
   Medal,
   Menu,
   PencilRuler,
@@ -18,6 +19,7 @@ import {
   Users,
 } from "lucide-react";
 import { useDaten } from "@/lib/store";
+import LoginSeite from "./LoginSeite";
 
 const BEREICHE: {
   label: string | null;
@@ -68,8 +70,22 @@ function istAktiv(pfad: string, href: string): boolean {
 
 export default function AppShell({ children }: { children: ReactNode }) {
   const pfad = usePathname();
-  const { entwurf, bereit } = useDaten();
+  const { entwurf, bereit, angemeldet, konfigFehlt, nutzerEmail, abmelden } = useDaten();
   const merklisteAnzahl = bereit ? entwurf.length : 0;
+
+  // Anmelde-Gate: ohne Konto (oder ohne Konfiguration) nur die Login-Ansicht.
+  if (bereit && (!angemeldet || konfigFehlt)) {
+    return <LoginSeite />;
+  }
+  if (!bereit) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+        <span className="flex h-10 w-10 animate-pulse items-center justify-center rounded-md bg-sky-700 text-white">
+          <Activity size={20} />
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen">
@@ -121,9 +137,19 @@ export default function AppShell({ children }: { children: ReactNode }) {
             </div>
           ))}
         </nav>
-        <p className="border-t border-slate-200 px-4 py-3 text-[11px] text-slate-400">
-          Lokale Version · Daten in ./daten
-        </p>
+        <div className="flex items-center gap-2 border-t border-slate-200 px-4 py-3">
+          <span className="min-w-0 flex-1 truncate text-[11px] text-slate-400" title={nutzerEmail ?? ""}>
+            {nutzerEmail ?? "Angemeldet"}
+          </span>
+          <button
+            type="button"
+            onClick={abmelden}
+            className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+            title="Abmelden"
+          >
+            <LogOut size={14} />
+          </button>
+        </div>
       </aside>
 
       {/* Kopfzeile (Mobil) */}
@@ -131,7 +157,15 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <span className="flex h-7 w-7 items-center justify-center rounded-md bg-sky-700 text-white">
           <Activity size={15} />
         </span>
-        <span className="text-sm font-semibold text-slate-900">Nachwuchscoach</span>
+        <span className="flex-1 text-sm font-semibold text-slate-900">Nachwuchscoach</span>
+        <button
+          type="button"
+          onClick={abmelden}
+          className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+          title="Abmelden"
+        >
+          <LogOut size={16} />
+        </button>
       </header>
 
       {/* Inhalt */}

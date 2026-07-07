@@ -6,13 +6,21 @@ des Codes (Bezeichner, Kommentare): **Deutsch**.
 ## Architektur
 
 - Next.js App Router; alle Seiten sind Client-Komponenten, Daten kommen per
-  `useDaten()` aus `lib/store.tsx` (lädt einmal `GET /api/daten`, Mutationen
-  optimistisch + API-Call). **Neue Entitäten immer durch alle Schichten
-  ziehen**: `lib/types.ts` → `lib/server/db.ts` (Tabelle + Repo + gesamtDaten +
-  importieren) → `app/api/<entität>/route.ts` → `lib/store.tsx`.
-- SQLite (`better-sqlite3`) in `./daten/nachwuchscoach.db`, Uploads in
-  `./daten/uploads` (Auslieferung über `/api/medien/datei/[name]`). Tabellen
-  speichern JSON-Payloads (`id` + `json`).
+  `useDaten()` aus `lib/store.tsx` – seit der Supabase-Migration lädt der
+  Store alles direkt aus **Supabase** (Google-Auth, Postgres mit RLS pro
+  Nutzer, Storage-Bucket `medien`). **Neue Entitäten immer durch alle
+  Schichten ziehen**: `lib/types.ts` → `supabase/schema.sql` (Tabelle
+  `id`/`user_id`/`json` + RLS-Policy) → `lib/store.tsx` (laden, upsert,
+  löschen, Import/Export in `datenSchreiben`/`allesLaden`/`allesLoeschen`).
+- Client-Setup in `lib/supabase.ts`: Client ist `null`, wenn die Env-Variablen
+  fehlen (`.env.local`, Vorlage `.env.local.beispiel`) – die App zeigt dann
+  einen Hinweis statt abzustürzen. Login-Gate liegt in
+  `components/AppShell.tsx` (rendert `LoginSeite`, solange kein Nutzer
+  angemeldet ist).
+- **Veraltet, nicht weiter ausbauen**: `lib/server/*` und `app/api/*`
+  (SQLite-Altbestand). Sie existieren nur noch für die einmalige Übernahme
+  lokaler Altdaten (`lokaleDatenUebernehmen` im Store holt `/api/export` und
+  die Mediendateien). Nach erfolgreicher Übernahme beim Nutzer löschen.
 - Detailseiten über Query-Parameter statt dynamischer Routen
   (`?id=…`, `?vorlage=…`, `?jahr=…`); Seiten mit `useSearchParams` brauchen
   `<Suspense>`. **Aus page.tsx nur den Default-Export** – Hilfskomponenten
@@ -43,10 +51,20 @@ des Codes (Bezeichner, Kommentare): **Deutsch**.
   `components/planer/elemente.tsx`; Platz-/Material-Konfiguration im
   Einstellungs-Key `plaetze`.
 
+## Betrieb
+
+- Supabase-Projekt: https://wgkockemwbnfvuylhxkl.supabase.co ·
+  Live-Site: https://nachwuchscoach.netlify.app (Deploy bei Push auf `main`).
+- Google-OAuth läuft im Testmodus: nur nils.negwer@gmail.com kann sich
+  anmelden; weitere Nutzer als Testnutzer in der Google Cloud Console
+  eintragen.
+- `npm run build` NIE bei laufendem `next dev` ausführen (zerschießt dessen
+  `.next`-Cache → 500er; Dev-Server danach neu starten).
+
 ## Roadmap (nicht ungefragt bauen)
 
-1. **Google-Login + Sync + Offline**: Migration des Stores auf Supabase
-   (Google-Auth, Postgres, Storage) + Hosting. Wartet auf Supabase-Projekt und
-   OAuth-Zugangsdaten des Nutzers. Danach PWA/Offline-Warteschlange.
-2. Community-Übungen mit Prüfung/Bewertung, Videos, KI-Planung (Konzept-Datei:
+1. Offline-Modus (PWA, Schreib-Warteschlange mit Sync).
+2. Alte SQLite-Schicht (`lib/server`, `app/api`) entfernen, sobald Nils die
+   lokale Datenübernahme erledigt hat.
+3. Community-Übungen mit Prüfung/Bewertung, Videos, KI-Planung (Konzept-Datei:
    `C:\Users\nils_\Desktop\Eingangskorb\leichtathletik-app-konzept.md`).

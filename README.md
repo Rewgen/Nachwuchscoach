@@ -31,27 +31,24 @@ Vom Handy im selben WLAN erreichbar unter `http://<PC-IP>:3000`.
 ## Technik
 
 - **Next.js 15** (App Router) + React 19 + TypeScript + Tailwind CSS 4 + lucide-react
-- **Backend**: API-Routen (`app/api/*`) auf **SQLite** (`better-sqlite3`);
-  Datenzugriff im Client ausschließlich über `lib/store.tsx`
-- **Daten**: alles im Ordner `./daten` (SQLite-Datei + `uploads/` für Medien) –
-  für eine Komplettsicherung diesen Ordner kopieren; JSON-Export/-Import unter
-  „Daten & Einstellungen"
+- **Backend**: **Supabase** – Google-Login, Postgres mit Row Level Security
+  (jeder Account sieht nur die eigenen Daten), Storage-Bucket für Medien.
+  Datenzugriff im Client ausschließlich über `lib/store.tsx`.
+- **Konfiguration**: `.env.local` mit `NEXT_PUBLIC_SUPABASE_URL` und
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Vorlage: `.env.local.beispiel`); dieselben
+  Variablen sind auf Netlify gesetzt. Datenbank-Schema: `supabase/schema.sql`
+  (einmalig im Supabase SQL-Editor ausführen).
+- **Hosting**: Netlify (https://nachwuchscoach.netlify.app), Deploy bei Push
+  auf `main`.
+- Die alten SQLite-API-Routen (`app/api/*`, `lib/server/*`) sind veraltet und
+  dienen nur noch der einmaligen Übernahme lokaler Altdaten („Daten &
+  Einstellungen“ → „Lokale Daten übernehmen“, inkl. Mediendateien).
 - Design: hell, flach, Inter; Seitenleiste am Desktop, Tab-Leiste am Handy
 
-## Roadmap: Konten, Sync & Offline
+## Roadmap
 
-Geplant ist der Ausbau zur Mehrgeräte-Plattform (Google-Login, Synchronisation
-PC ↔ Handy, Offline-Nutzung). Architekturentscheidung: **Supabase**
-(Google-Auth, Postgres, Storage) + Hosting (Vercel/Netlify). Der Client ist
-darauf vorbereitet – sämtlicher Datenzugriff läuft über `lib/store.tsx` und
-kann dort auf Supabase umgestellt werden, ohne die Seiten anzufassen.
-
-Dafür werden benötigt (vom Betreiber anzulegen):
-1. Ein Supabase-Projekt (URL + Anon-Key) mit aktiviertem Google-Provider
-   (Google-Cloud-OAuth-Client-ID/-Secret)
-2. Ein Hosting-Ziel (Vercel oder Netlify)
-
-Danach: Offline-Modus als PWA (lokaler Cache + Schreib-Warteschlange).
-
-Später laut Konzept: Community-Übungen mit Prüfung/Bewertung, Videoproduktion,
-KI-Trainingsplanung, Ausbau auf Sportunterricht.
+1. Offline-Modus als PWA (lokaler Cache + Schreib-Warteschlange, Sync bei
+   Wiederverbindung)
+2. Alte SQLite-Schicht entfernen, sobald die Datenübernahme erledigt ist
+3. Später laut Konzept: Community-Übungen mit Prüfung/Bewertung,
+   Videoproduktion, KI-Trainingsplanung, Ausbau auf Sportunterricht

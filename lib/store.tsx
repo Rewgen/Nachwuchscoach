@@ -22,19 +22,27 @@ import type {
   Training,
   Uebung,
 } from "./types";
+import { supabase, supabaseKonfiguriert, storageUrl } from "./supabase";
+import { SEED_UEBUNGEN } from "./seed";
 
-// Zugriffsschicht des Clients: lädt einmal den Gesamtzustand vom Server
-// (GET /api/daten) und hält ihn im Speicher. Mutationen aktualisieren den
-// lokalen Zustand sofort und schreiben parallel über die API in SQLite.
+// Zugriffsschicht des Clients: Supabase (Postgres + Storage + Google-Login).
+// Der Gesamtzustand wird einmal geladen und im Speicher gehalten; Mutationen
+// aktualisieren den lokalen Zustand sofort und schreiben parallel in die
+// Datenbank. Row Level Security sorgt dafür, dass jeder Account nur die
+// eigenen Daten sieht.
 
 const MERKLISTE_KEY = "nachwuchscoach-merkliste";
-const ALT_KEY = "nachwuchscoach-daten-v1"; // localStorage-Format der Rohversion
-const MIGRIERT_KEY = "nachwuchscoach-migriert";
 
 interface StoreWert {
   bereit: boolean;
   daten: AppDaten;
   entwurf: string[];
+  // Konto
+  konfigFehlt: boolean;
+  angemeldet: boolean;
+  nutzerEmail: string | null;
+  anmeldenMitGoogle: () => void;
+  abmelden: () => void;
   // Übungen & Medien
   uebungSpeichern: (u: Uebung) => void;
   uebungLoeschen: (id: string) => void;
@@ -67,6 +75,7 @@ interface StoreWert {
   entwurfLeeren: () => void;
   // Datenverwaltung
   datenImportieren: (json: string, modus: "ersetzen" | "zusammenfuehren") => Promise<string | null>;
+  lokaleDatenUebernehmen: () => Promise<string | null>;
 }
 
 const LEER: AppDaten = {
@@ -84,56 +93,185 @@ const LEER: AppDaten = {
 
 const StoreContext = createContext<StoreWert | null>(null);
 
-async function api(pfad: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(pfad, init);
-  if (!res.ok) {
-    console.error(`API-Fehler ${res.status} bei ${pfad}`);
-  }
-  return res;
+function fehlerLoggen(kontext: string) {
+  return ({ error }: { error: { message: string } | null }) => {
+    if (error) console.error(`Supabase-Fehler (${kontext}):`, error.message);
+  };
 }
 
-function postJson(pfad: string, body: unknown) {
-  return api(pfad, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+/** Alle Daten des angemeldeten Nutzers laden. */
+async function allesLaden(): Promise<AppDaten> {
+  const sb = supabase!;
+  const [
+    uebungen,
+    medien,
+    trainings,
+    teilnehmer,
+    leistungen,
+    checklisten,
+    stoppuhr,
+    sportabzeichen,
+    plaene,
+    einstellungen,
+  ] = await Promise.all([
+    sb.from("uebungen").select("json"),
+    sb.from("medien").select("json"),
+    sb.from("trainings").select("json"),
+    sb.from("teilnehmer").select("json"),
+    sb.from("leistungen").select("json"),
+    sb.from("checklisten").select("json"),
+    sb.from("stoppuhr_sessions").select("json"),
+    sb.from("sportabzeichen").select("json"),
+    sb.from("platzplaene").select("json"),
+    sb.from("einstellungen").select("key, wert"),
+  ]);
+  const liste = <T,>(res: { data: { json: T }[] | null }) =>
+    (res.data ?? []).map((z) => z.json);
+  return {
+    uebungen: liste<Uebung>(uebungen),
+    medien: liste<Medium>(medien),
+    trainings: liste<Training>(trainings),
+    teilnehmer: liste<Teilnehmer>(teilnehmer),
+    leistungen: liste<Leistung>(leistungen),
+    checklisten: liste<Checkliste>(checklisten),
+    stoppuhrSessions: liste<StoppuhrSession>(stoppuhr),
+    sportabzeichen: liste<SportabzeichenEintrag>(sportabzeichen),
+    platzplaene: liste<Platzplan>(plaene),
+    einstellungen: Object.fromEntries(
+      (einstellungen.data ?? []).map((z) => [z.key, z.wert])
+    ),
+  };
+}
+
+/** Sicherung/Import in die Datenbank schreiben (Medien-Dateien nicht enthalten). */
+async function datenSchreiben(daten: Partial<AppDaten>) {
+  const sb = supabase!;
+  const jsonZeilen = (objekte?: { id: string }[]) =>
+    (objekte ?? []).map((o) => ({ id: o.id, json: o }));
+
+  if (daten.uebungen?.length)
+    fehlerLoggen("uebungen")(await sb.from("uebungen").upsert(jsonZeilen(daten.uebungen)));
+  if (daten.medien?.length)
+    fehlerLoggen("medien")(
+      await sb
+        .from("medien")
+        .upsert(daten.medien.map((m) => ({ id: m.id, uebung_id: m.uebungId, json: m })))
+    );
+  if (daten.trainings?.length)
+    fehlerLoggen("trainings")(await sb.from("trainings").upsert(jsonZeilen(daten.trainings)));
+  if (daten.teilnehmer?.length)
+    fehlerLoggen("teilnehmer")(await sb.from("teilnehmer").upsert(jsonZeilen(daten.teilnehmer)));
+  if (daten.leistungen?.length)
+    fehlerLoggen("leistungen")(
+      await sb
+        .from("leistungen")
+        .upsert(daten.leistungen.map((l) => ({ id: l.id, teilnehmer_id: l.teilnehmerId, json: l })))
+    );
+  if (daten.checklisten?.length)
+    fehlerLoggen("checklisten")(await sb.from("checklisten").upsert(jsonZeilen(daten.checklisten)));
+  if (daten.stoppuhrSessions?.length)
+    fehlerLoggen("stoppuhr")(
+      await sb.from("stoppuhr_sessions").upsert(jsonZeilen(daten.stoppuhrSessions))
+    );
+  if (daten.platzplaene?.length)
+    fehlerLoggen("platzplaene")(await sb.from("platzplaene").upsert(jsonZeilen(daten.platzplaene)));
+  if (daten.sportabzeichen?.length)
+    fehlerLoggen("sportabzeichen")(
+      await sb.from("sportabzeichen").upsert(
+        daten.sportabzeichen.map((e) => ({
+          jahr: e.jahr,
+          teilnehmer_id: e.teilnehmerId,
+          json: e,
+        })),
+        { onConflict: "user_id,jahr,teilnehmer_id" }
+      )
+    );
+  if (daten.einstellungen)
+    fehlerLoggen("einstellungen")(
+      await sb.from("einstellungen").upsert(
+        Object.entries(daten.einstellungen).map(([key, wert]) => ({ key, wert })),
+        { onConflict: "user_id,key" }
+      )
+    );
+}
+
+/** Alle eigenen Zeilen löschen (für Import im Modus "ersetzen"). */
+async function allesLoeschen() {
+  const sb = supabase!;
+  await Promise.all([
+    sb.from("uebungen").delete().neq("id", ""),
+    sb.from("medien").delete().neq("id", ""),
+    sb.from("trainings").delete().neq("id", ""),
+    sb.from("teilnehmer").delete().neq("id", ""),
+    sb.from("leistungen").delete().neq("id", ""),
+    sb.from("checklisten").delete().neq("id", ""),
+    sb.from("stoppuhr_sessions").delete().neq("id", ""),
+    sb.from("platzplaene").delete().neq("id", ""),
+    sb.from("sportabzeichen").delete().neq("teilnehmer_id", ""),
+    sb.from("einstellungen").delete().neq("key", ""),
+  ]);
 }
 
 export function DatenProvider({ children }: { children: ReactNode }) {
   const [daten, setDaten] = useState<AppDaten>(LEER);
   const [bereit, setBereit] = useState(false);
+  const [angemeldet, setAngemeldet] = useState(false);
+  const [nutzerEmail, setNutzerEmail] = useState<string | null>(null);
   const [entwurf, setEntwurf] = useState<string[]>([]);
-  const geladen = useRef(false);
+  const geladenFuer = useRef<string | null>(null);
 
   useEffect(() => {
-    if (geladen.current) return;
-    geladen.current = true;
-    (async () => {
-      // Einmalige Übernahme der alten localStorage-Daten aus der Rohversion.
+    try {
+      const merkliste = localStorage.getItem(MERKLISTE_KEY);
+      if (merkliste) setEntwurf(JSON.parse(merkliste));
+    } catch {
+      // Merkliste ist verzichtbar.
+    }
+
+    if (!supabase) {
+      setBereit(true);
+      return;
+    }
+
+    const laden = async (userId: string, email: string | null) => {
+      if (geladenFuer.current === userId) return;
+      geladenFuer.current = userId;
+      setNutzerEmail(email);
       try {
-        const alt = localStorage.getItem(ALT_KEY);
-        if (alt && !localStorage.getItem(MIGRIERT_KEY)) {
-          const geparst = JSON.parse(alt) as { uebungen?: Uebung[]; trainings?: Training[] };
-          await postJson("/api/import", {
-            daten: { uebungen: geparst.uebungen, trainings: geparst.trainings },
-            modus: "zusammenfuehren",
-          });
-          localStorage.setItem(MIGRIERT_KEY, "1");
+        let alles = await allesLaden();
+        // Erster Login: Übungs-Startbestand einspielen.
+        if (alles.uebungen.length === 0) {
+          await datenSchreiben({ uebungen: SEED_UEBUNGEN });
+          alles = { ...alles, uebungen: SEED_UEBUNGEN };
         }
-        const merkliste = localStorage.getItem(MERKLISTE_KEY);
-        if (merkliste) setEntwurf(JSON.parse(merkliste));
-      } catch {
-        // Migration/Merkliste sind optional – Fehler nicht blockieren lassen.
-      }
-      try {
-        const res = await api("/api/daten");
-        setDaten((await res.json()) as AppDaten);
+        setDaten(alles);
+        setAngemeldet(true);
       } catch (e) {
         console.error("Daten konnten nicht geladen werden:", e);
       }
       setBereit(true);
-    })();
+    };
+
+    void supabase.auth.getSession().then(({ data }) => {
+      if (data.session?.user) {
+        void laden(data.session.user.id, data.session.user.email ?? null);
+      } else {
+        setBereit(true);
+      }
+    });
+
+    const { data: abo } = supabase.auth.onAuthStateChange((_ereignis, session) => {
+      if (session?.user) {
+        void laden(session.user.id, session.user.email ?? null);
+      } else {
+        geladenFuer.current = null;
+        setAngemeldet(false);
+        setNutzerEmail(null);
+        setDaten(LEER);
+        setBereit(true);
+      }
+    });
+    return () => abo.subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -145,10 +283,28 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     }
   }, [entwurf, bereit]);
 
+  // ===== Konto =====
+
+  const anmeldenMitGoogle = useCallback(() => {
+    void supabase?.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin },
+    });
+  }, []);
+
+  const abmelden = useCallback(() => {
+    void supabase?.auth.signOut();
+  }, []);
+
   // ===== Generische Upsert/Delete-Helfer =====
 
   const upsert = useCallback(
-    <K extends keyof AppDaten, T extends { id: string }>(feld: K, pfad: string, objekt: T) => {
+    <K extends keyof AppDaten, T extends { id: string }>(
+      feld: K,
+      tabelle: string,
+      objekt: T,
+      extraSpalten: Record<string, unknown> = {}
+    ) => {
       setDaten((d) => {
         const liste = d[feld] as unknown as T[];
         const vorhanden = liste.some((x) => x.id === objekt.id);
@@ -159,18 +315,21 @@ export function DatenProvider({ children }: { children: ReactNode }) {
             : [...liste, objekt],
         };
       });
-      void postJson(pfad, objekt);
+      void supabase
+        ?.from(tabelle)
+        .upsert({ id: objekt.id, json: objekt, ...extraSpalten })
+        .then(fehlerLoggen(tabelle));
     },
     []
   );
 
   const entfernen = useCallback(
-    <K extends keyof AppDaten>(feld: K, pfad: string, id: string) => {
+    <K extends keyof AppDaten>(feld: K, tabelle: string, id: string) => {
       setDaten((d) => ({
         ...d,
         [feld]: (d[feld] as unknown as { id: string }[]).filter((x) => x.id !== id),
       }));
-      void api(`${pfad}?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+      void supabase?.from(tabelle).delete().eq("id", id).then(fehlerLoggen(tabelle));
     },
     []
   );
@@ -178,40 +337,72 @@ export function DatenProvider({ children }: { children: ReactNode }) {
   // ===== Übungen & Medien =====
 
   const uebungSpeichern = useCallback(
-    (u: Uebung) => upsert("uebungen", "/api/uebungen", u),
+    (u: Uebung) => upsert("uebungen", "uebungen", u),
     [upsert]
   );
 
   const uebungLoeschen = useCallback((id: string) => {
-    setDaten((d) => ({
-      ...d,
-      uebungen: d.uebungen.filter((x) => x.id !== id),
-      medien: d.medien.filter((m) => m.uebungId !== id),
-    }));
+    setDaten((d) => {
+      // Zugehörige Mediendateien im Storage mit entfernen.
+      const pfade = d.medien
+        .filter((m) => m.uebungId === id && m.dateiname?.includes("/"))
+        .map((m) => m.dateiname!);
+      if (pfade.length > 0) {
+        void supabase?.storage.from("medien").remove(pfade);
+      }
+      return {
+        ...d,
+        uebungen: d.uebungen.filter((x) => x.id !== id),
+        medien: d.medien.filter((m) => m.uebungId !== id),
+      };
+    });
     setEntwurf((e) => e.filter((x) => x !== id));
-    void api(`/api/uebungen?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    void supabase?.from("uebungen").delete().eq("id", id).then(fehlerLoggen("uebungen"));
+    void supabase?.from("medien").delete().eq("uebung_id", id).then(fehlerLoggen("medien"));
   }, []);
 
   const favoritUmschalten = useCallback((id: string) => {
     setDaten((d) => {
       const u = d.uebungen.find((x) => x.id === id);
-      if (u) void postJson("/api/uebungen", { ...u, favorit: !u.favorit });
-      return {
-        ...d,
-        uebungen: d.uebungen.map((x) => (x.id === id ? { ...x, favorit: !x.favorit } : x)),
-      };
+      if (u) {
+        const neu = { ...u, favorit: !u.favorit };
+        void supabase
+          ?.from("uebungen")
+          .upsert({ id: neu.id, json: neu })
+          .then(fehlerLoggen("uebungen"));
+        return {
+          ...d,
+          uebungen: d.uebungen.map((x) => (x.id === id ? neu : x)),
+        };
+      }
+      return d;
     });
   }, []);
 
   const mediumHochladen = useCallback(
     async (uebungId: string, datei: File, reihenfolge: number): Promise<Medium | null> => {
-      const form = new FormData();
-      form.append("datei", datei);
-      form.append("uebungId", uebungId);
-      form.append("reihenfolge", String(reihenfolge));
-      const res = await api("/api/medien", { method: "POST", body: form });
-      if (!res.ok) return null;
-      const medium = (await res.json()) as Medium;
+      if (!supabase) return null;
+      const { data: sessionDaten } = await supabase.auth.getUser();
+      const userId = sessionDaten.user?.id;
+      if (!userId) return null;
+      const endung = (datei.name.split(".").pop() ?? "bin").toLowerCase();
+      const istVideo = ["mp4", "webm", "mov", "m4v"].includes(endung);
+      const pfad = `${userId}/${neueId()}.${endung}`;
+      const { error } = await supabase.storage.from("medien").upload(pfad, datei);
+      if (error) {
+        console.error("Upload fehlgeschlagen:", error.message);
+        return null;
+      }
+      const medium: Medium = {
+        id: neueId(),
+        uebungId,
+        typ: istVideo ? "video" : "bild",
+        dateiname: pfad,
+        reihenfolge,
+      };
+      fehlerLoggen("medien")(
+        await supabase.from("medien").upsert({ id: medium.id, uebung_id: uebungId, json: medium })
+      );
       setDaten((d) => ({ ...d, medien: [...d.medien, medium] }));
       return medium;
     },
@@ -219,76 +410,89 @@ export function DatenProvider({ children }: { children: ReactNode }) {
   );
 
   const mediumSpeichern = useCallback(
-    (m: Medium) => upsert("medien", "/api/medien", m),
+    (m: Medium) => upsert("medien", "medien", m, { uebung_id: m.uebungId }),
     [upsert]
   );
 
-  const mediumLoeschen = useCallback(
-    (id: string) => entfernen("medien", "/api/medien", id),
-    [entfernen]
-  );
+  const mediumLoeschen = useCallback((id: string) => {
+    setDaten((d) => {
+      const m = d.medien.find((x) => x.id === id);
+      if (m?.dateiname?.includes("/")) {
+        void supabase?.storage.from("medien").remove([m.dateiname]);
+      }
+      return { ...d, medien: d.medien.filter((x) => x.id !== id) };
+    });
+    void supabase?.from("medien").delete().eq("id", id).then(fehlerLoggen("medien"));
+  }, []);
 
   // ===== Übrige Entitäten =====
 
   const trainingSpeichern = useCallback(
-    (t: Training) => upsert("trainings", "/api/trainings", t),
+    (t: Training) => upsert("trainings", "trainings", t),
     [upsert]
   );
   const trainingLoeschen = useCallback(
-    (id: string) => entfernen("trainings", "/api/trainings", id),
+    (id: string) => entfernen("trainings", "trainings", id),
     [entfernen]
   );
 
   const teilnehmerSpeichern = useCallback(
-    (t: Teilnehmer) => upsert("teilnehmer", "/api/teilnehmer", t),
+    (t: Teilnehmer) => upsert("teilnehmer", "teilnehmer", t),
     [upsert]
   );
-  const teilnehmerLoeschen = useCallback(
-    (id: string) => {
-      setDaten((d) => ({
-        ...d,
-        teilnehmer: d.teilnehmer.filter((x) => x.id !== id),
-        leistungen: d.leistungen.filter((l) => l.teilnehmerId !== id),
-        sportabzeichen: d.sportabzeichen.filter((s) => s.teilnehmerId !== id),
-      }));
-      void api(`/api/teilnehmer?id=${encodeURIComponent(id)}`, { method: "DELETE" });
-    },
-    []
-  );
+  const teilnehmerLoeschen = useCallback((id: string) => {
+    setDaten((d) => ({
+      ...d,
+      teilnehmer: d.teilnehmer.filter((x) => x.id !== id),
+      leistungen: d.leistungen.filter((l) => l.teilnehmerId !== id),
+      sportabzeichen: d.sportabzeichen.filter((s) => s.teilnehmerId !== id),
+    }));
+    void supabase?.from("teilnehmer").delete().eq("id", id).then(fehlerLoggen("teilnehmer"));
+    void supabase
+      ?.from("leistungen")
+      .delete()
+      .eq("teilnehmer_id", id)
+      .then(fehlerLoggen("leistungen"));
+    void supabase
+      ?.from("sportabzeichen")
+      .delete()
+      .eq("teilnehmer_id", id)
+      .then(fehlerLoggen("sportabzeichen"));
+  }, []);
 
   const leistungSpeichern = useCallback(
-    (l: Leistung) => upsert("leistungen", "/api/leistungen", l),
+    (l: Leistung) => upsert("leistungen", "leistungen", l, { teilnehmer_id: l.teilnehmerId }),
     [upsert]
   );
   const leistungLoeschen = useCallback(
-    (id: string) => entfernen("leistungen", "/api/leistungen", id),
+    (id: string) => entfernen("leistungen", "leistungen", id),
     [entfernen]
   );
 
   const checklisteSpeichern = useCallback(
-    (c: Checkliste) => upsert("checklisten", "/api/checklisten", c),
+    (c: Checkliste) => upsert("checklisten", "checklisten", c),
     [upsert]
   );
   const checklisteLoeschen = useCallback(
-    (id: string) => entfernen("checklisten", "/api/checklisten", id),
+    (id: string) => entfernen("checklisten", "checklisten", id),
     [entfernen]
   );
 
   const stoppuhrSessionSpeichern = useCallback(
-    (s: StoppuhrSession) => upsert("stoppuhrSessions", "/api/stoppuhr", s),
+    (s: StoppuhrSession) => upsert("stoppuhrSessions", "stoppuhr_sessions", s),
     [upsert]
   );
   const stoppuhrSessionLoeschen = useCallback(
-    (id: string) => entfernen("stoppuhrSessions", "/api/stoppuhr", id),
+    (id: string) => entfernen("stoppuhrSessions", "stoppuhr_sessions", id),
     [entfernen]
   );
 
   const platzplanSpeichern = useCallback(
-    (p: Platzplan) => upsert("platzplaene", "/api/platzplaene", p),
+    (p: Platzplan) => upsert("platzplaene", "platzplaene", p),
     [upsert]
   );
   const platzplanLoeschen = useCallback(
-    (id: string) => entfernen("platzplaene", "/api/platzplaene", id),
+    (id: string) => entfernen("platzplaene", "platzplaene", id),
     [entfernen]
   );
 
@@ -306,7 +510,13 @@ export function DatenProvider({ children }: { children: ReactNode }) {
           : [...d.sportabzeichen, e],
       };
     });
-    void postJson("/api/sportabzeichen", e);
+    void supabase
+      ?.from("sportabzeichen")
+      .upsert(
+        { jahr: e.jahr, teilnehmer_id: e.teilnehmerId, json: e },
+        { onConflict: "user_id,jahr,teilnehmer_id" }
+      )
+      .then(fehlerLoggen("sportabzeichen"));
   }, []);
 
   const sportabzeichenLoeschen = useCallback((jahr: number, teilnehmerId: string) => {
@@ -316,15 +526,20 @@ export function DatenProvider({ children }: { children: ReactNode }) {
         (x) => !(x.jahr === jahr && x.teilnehmerId === teilnehmerId)
       ),
     }));
-    void api(
-      `/api/sportabzeichen?jahr=${jahr}&teilnehmerId=${encodeURIComponent(teilnehmerId)}`,
-      { method: "DELETE" }
-    );
+    void supabase
+      ?.from("sportabzeichen")
+      .delete()
+      .eq("jahr", jahr)
+      .eq("teilnehmer_id", teilnehmerId)
+      .then(fehlerLoggen("sportabzeichen"));
   }, []);
 
   const einstellungSetzen = useCallback((key: string, wert: unknown) => {
     setDaten((d) => ({ ...d, einstellungen: { ...d.einstellungen, [key]: wert } }));
-    void postJson("/api/einstellungen", { key, wert });
+    void supabase
+      ?.from("einstellungen")
+      .upsert({ key, wert }, { onConflict: "user_id,key" })
+      .then(fehlerLoggen("einstellungen"));
   }, []);
 
   // ===== Merkliste =====
@@ -337,29 +552,95 @@ export function DatenProvider({ children }: { children: ReactNode }) {
 
   const entwurfLeeren = useCallback(() => setEntwurf([]), []);
 
-  // ===== Import =====
+  // ===== Import / Übernahme =====
 
   const datenImportieren = useCallback(
     async (json: string, modus: "ersetzen" | "zusammenfuehren"): Promise<string | null> => {
-      let geparst: unknown;
+      if (!supabase) return "Supabase ist nicht konfiguriert.";
+      let geparst: Partial<AppDaten>;
       try {
-        geparst = JSON.parse(json);
+        geparst = JSON.parse(json) as Partial<AppDaten>;
       } catch {
         return "Die Datei ist kein gültiges JSON.";
       }
-      const res = await postJson("/api/import", { daten: geparst, modus });
-      if (!res.ok) return "Der Import ist fehlgeschlagen.";
-      setDaten((await res.json()) as AppDaten);
-      return null;
+      if (!geparst || typeof geparst !== "object") {
+        return "Die Datei hat nicht das erwartete Format.";
+      }
+      try {
+        if (modus === "ersetzen") await allesLoeschen();
+        await datenSchreiben(geparst);
+        setDaten(await allesLaden());
+        return null;
+      } catch (e) {
+        console.error("Import fehlgeschlagen:", e);
+        return "Der Import ist fehlgeschlagen.";
+      }
     },
     []
   );
+
+  /**
+   * Einmalige Übernahme der alten lokalen SQLite-Daten (inkl. Mediendateien).
+   * Funktioniert nur am PC, auf dem die alte Version lief – dort liefert die
+   * alte API-Route /api/export noch die Daten und /api/medien/datei die Dateien.
+   */
+  const lokaleDatenUebernehmen = useCallback(async (): Promise<string | null> => {
+    if (!supabase) return "Supabase ist nicht konfiguriert.";
+    const { data: sessionDaten } = await supabase.auth.getUser();
+    const userId = sessionDaten.user?.id;
+    if (!userId) return "Nicht angemeldet.";
+
+    let alt: AppDaten;
+    try {
+      const res = await fetch("/api/export");
+      if (!res.ok) throw new Error(String(res.status));
+      alt = (await res.json()) as AppDaten;
+    } catch {
+      return "Keine lokalen Daten gefunden. Die Übernahme funktioniert nur am PC mit der alten lokalen Datenbank (npm run dev).";
+    }
+
+    // Mediendateien vom alten lokalen Speicher in den Supabase-Storage heben.
+    let uebertragen = 0;
+    for (const m of alt.medien ?? []) {
+      if (!m.dateiname || m.dateiname.includes("/")) continue;
+      try {
+        const dres = await fetch(`/api/medien/datei/${m.dateiname}`);
+        if (!dres.ok) continue;
+        const blob = await dres.blob();
+        const pfad = `${userId}/${m.dateiname}`;
+        const { error } = await supabase.storage
+          .from("medien")
+          .upload(pfad, blob, { upsert: true });
+        if (!error) {
+          m.dateiname = pfad;
+          uebertragen++;
+        }
+      } catch {
+        // Einzelne Datei fehlt – Rest trotzdem übernehmen.
+      }
+    }
+
+    try {
+      await datenSchreiben(alt);
+      setDaten(await allesLaden());
+    } catch (e) {
+      console.error("Übernahme fehlgeschlagen:", e);
+      return "Die Übernahme ist fehlgeschlagen.";
+    }
+    console.info(`Lokale Daten übernommen (${uebertragen} Mediendateien).`);
+    return null;
+  }, []);
 
   const wert = useMemo<StoreWert>(
     () => ({
       bereit,
       daten,
       entwurf,
+      konfigFehlt: !supabaseKonfiguriert,
+      angemeldet,
+      nutzerEmail,
+      anmeldenMitGoogle,
+      abmelden,
       uebungSpeichern,
       uebungLoeschen,
       favoritUmschalten,
@@ -384,11 +665,16 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       entwurfUmschalten,
       entwurfLeeren,
       datenImportieren,
+      lokaleDatenUebernehmen,
     }),
     [
       bereit,
       daten,
       entwurf,
+      angemeldet,
+      nutzerEmail,
+      anmeldenMitGoogle,
+      abmelden,
       uebungSpeichern,
       uebungLoeschen,
       favoritUmschalten,
@@ -413,6 +699,7 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       entwurfUmschalten,
       entwurfLeeren,
       datenImportieren,
+      lokaleDatenUebernehmen,
     ]
   );
 
@@ -455,10 +742,15 @@ export function medienFuerUebung(medien: Medium[], uebungId: string): Medium[] {
     .sort((a, b) => a.reihenfolge - b.reihenfolge);
 }
 
-/** URL, unter der eine hochgeladene Mediendatei erreichbar ist. */
+/** URL, unter der eine Mediendatei erreichbar ist. */
 export function mediumUrl(m: Medium): string {
   if (m.typ === "youtube") return m.url ?? "";
-  return `/api/medien/datei/${m.dateiname}`;
+  if (!m.dateiname) return "";
+  // Neue Medien liegen im Supabase-Storage (Pfad mit "/"), alte noch in der
+  // lokalen SQLite-Version – bis zur Übernahme über die alte Route ausliefern.
+  return m.dateiname.includes("/")
+    ? storageUrl(m.dateiname)
+    : `/api/medien/datei/${m.dateiname}`;
 }
 
 /** YouTube-Video-ID aus einem normalen Link. */
