@@ -23,13 +23,22 @@ import type {
   Uebung,
 } from "./types";
 import { supabase, supabaseKonfiguriert, storageUrl } from "./supabase";
+import {
+  cacheLaden,
+  cacheSpeichern,
+  istNetzwerkFehler,
+  warteschlangeLaden,
+  warteschlangeSpeichern,
+  type SchreibAktion,
+} from "./offline";
 import { SEED_UEBUNGEN } from "./seed";
 
-// Zugriffsschicht des Clients: Supabase (Postgres + Storage + Google-Login).
-// Der Gesamtzustand wird einmal geladen und im Speicher gehalten; Mutationen
-// aktualisieren den lokalen Zustand sofort und schreiben parallel in die
-// Datenbank. Row Level Security sorgt dafür, dass jeder Account nur die
-// eigenen Daten sieht.
+// Zugriffsschicht des Clients: Supabase (Postgres + Storage + Google-Login)
+// mit Offline-Unterbau. Der Gesamtzustand wird beim Start sofort aus dem
+// lokalen Cache angezeigt und im Hintergrund vom Server aktualisiert.
+// Schreibvorgänge laufen über eine Warteschlange: ohne Netz werden sie
+// gesammelt und bei Wiederverbindung in ursprünglicher Reihenfolge
+// nachgezogen (Row Level Security trennt die Konten serverseitig).
 
 const MERKLISTE_KEY = "nachwuchscoach-merkliste";
 
@@ -43,6 +52,9 @@ interface StoreWert {
   nutzerEmail: string | null;
   anmeldenMitGoogle: () => void;
   abmelden: () => void;
+  // Offline
+  offline: boolean;
+  wartendeAenderungen: number;
   // Übungen & Medien
   uebungSpeichern: (u: Uebung) => void;
   uebungLoeschen: (id: string) => void;
@@ -93,27 +105,43 @@ const LEER: AppDaten = {
 
 const StoreContext = createContext<StoreWert | null>(null);
 
-function fehlerLoggen(kontext: string) {
-  return ({ error }: { error: { message: string } | null }) => {
-    if (error) console.error(`Supabase-Fehler (${kontext}):`, error.message);
-  };
+/**
+ * Eine Schreibaktion gegen Supabase ausführen.
+ * "netzfehler" = später erneut versuchen; fachliche Fehler werden geloggt
+ * und nicht wiederholt (sonst bliebe die Warteschlange ewig hängen).
+ */
+async function aktionAusfuehren(aktion: SchreibAktion): Promise<"ok" | "netzfehler"> {
+  if (!supabase) return "ok";
+  try {
+    let fehler: { message: string } | null = null;
+    if (aktion.typ === "upsert") {
+      ({ error: fehler } = await supabase
+        .from(aktion.tabelle)
+        .upsert(aktion.zeile!, aktion.onConflict ? { onConflict: aktion.onConflict } : undefined));
+    } else {
+      let abfrage = supabase.from(aktion.tabelle).delete();
+      for (const [spalte, wert] of Object.entries(aktion.filter ?? {})) {
+        abfrage = abfrage.eq(spalte, wert);
+      }
+      ({ error: fehler } = await abfrage);
+    }
+    if (fehler) {
+      if (istNetzwerkFehler(fehler.message)) return "netzfehler";
+      console.error(`Supabase-Fehler (${aktion.tabelle}):`, fehler.message);
+      return "ok";
+    }
+    return "ok";
+  } catch (e) {
+    if (istNetzwerkFehler((e as Error).message)) return "netzfehler";
+    console.error(`Supabase-Fehler (${aktion.tabelle}):`, e);
+    return "ok";
+  }
 }
 
-/** Alle Daten des angemeldeten Nutzers laden. */
+/** Alle Daten des angemeldeten Nutzers laden (wirft bei jedem Lesefehler). */
 async function allesLaden(): Promise<AppDaten> {
   const sb = supabase!;
-  const [
-    uebungen,
-    medien,
-    trainings,
-    teilnehmer,
-    leistungen,
-    checklisten,
-    stoppuhr,
-    sportabzeichen,
-    plaene,
-    einstellungen,
-  ] = await Promise.all([
+  const antworten = await Promise.all([
     sb.from("uebungen").select("json"),
     sb.from("medien").select("json"),
     sb.from("trainings").select("json"),
@@ -125,20 +153,26 @@ async function allesLaden(): Promise<AppDaten> {
     sb.from("platzplaene").select("json"),
     sb.from("einstellungen").select("key, wert"),
   ]);
-  const liste = <T,>(res: { data: { json: T }[] | null }) =>
-    (res.data ?? []).map((z) => z.json);
+  for (const antwort of antworten) {
+    if (antwort.error) throw new Error(antwort.error.message);
+  }
+  const liste = <T,>(i: number) =>
+    ((antworten[i].data ?? []) as { json: T }[]).map((z) => z.json);
   return {
-    uebungen: liste<Uebung>(uebungen),
-    medien: liste<Medium>(medien),
-    trainings: liste<Training>(trainings),
-    teilnehmer: liste<Teilnehmer>(teilnehmer),
-    leistungen: liste<Leistung>(leistungen),
-    checklisten: liste<Checkliste>(checklisten),
-    stoppuhrSessions: liste<StoppuhrSession>(stoppuhr),
-    sportabzeichen: liste<SportabzeichenEintrag>(sportabzeichen),
-    platzplaene: liste<Platzplan>(plaene),
+    uebungen: liste<Uebung>(0),
+    medien: liste<Medium>(1),
+    trainings: liste<Training>(2),
+    teilnehmer: liste<Teilnehmer>(3),
+    leistungen: liste<Leistung>(4),
+    checklisten: liste<Checkliste>(5),
+    stoppuhrSessions: liste<StoppuhrSession>(6),
+    sportabzeichen: liste<SportabzeichenEintrag>(7),
+    platzplaene: liste<Platzplan>(8),
     einstellungen: Object.fromEntries(
-      (einstellungen.data ?? []).map((z) => [z.key, z.wert])
+      ((antworten[9].data ?? []) as unknown as { key: string; wert: unknown }[]).map((z) => [
+        z.key,
+        z.wert,
+      ])
     ),
   };
 }
@@ -146,37 +180,43 @@ async function allesLaden(): Promise<AppDaten> {
 /** Sicherung/Import in die Datenbank schreiben (Medien-Dateien nicht enthalten). */
 async function datenSchreiben(daten: Partial<AppDaten>) {
   const sb = supabase!;
+  const pruefen = ({ error }: { error: { message: string } | null }, kontext: string) => {
+    if (error) throw new Error(`${kontext}: ${error.message}`);
+  };
   const jsonZeilen = (objekte?: { id: string }[]) =>
     (objekte ?? []).map((o) => ({ id: o.id, json: o }));
 
   if (daten.uebungen?.length)
-    fehlerLoggen("uebungen")(await sb.from("uebungen").upsert(jsonZeilen(daten.uebungen)));
+    pruefen(await sb.from("uebungen").upsert(jsonZeilen(daten.uebungen)), "uebungen");
   if (daten.medien?.length)
-    fehlerLoggen("medien")(
+    pruefen(
       await sb
         .from("medien")
-        .upsert(daten.medien.map((m) => ({ id: m.id, uebung_id: m.uebungId, json: m })))
+        .upsert(daten.medien.map((m) => ({ id: m.id, uebung_id: m.uebungId, json: m }))),
+      "medien"
     );
   if (daten.trainings?.length)
-    fehlerLoggen("trainings")(await sb.from("trainings").upsert(jsonZeilen(daten.trainings)));
+    pruefen(await sb.from("trainings").upsert(jsonZeilen(daten.trainings)), "trainings");
   if (daten.teilnehmer?.length)
-    fehlerLoggen("teilnehmer")(await sb.from("teilnehmer").upsert(jsonZeilen(daten.teilnehmer)));
+    pruefen(await sb.from("teilnehmer").upsert(jsonZeilen(daten.teilnehmer)), "teilnehmer");
   if (daten.leistungen?.length)
-    fehlerLoggen("leistungen")(
+    pruefen(
       await sb
         .from("leistungen")
-        .upsert(daten.leistungen.map((l) => ({ id: l.id, teilnehmer_id: l.teilnehmerId, json: l })))
+        .upsert(daten.leistungen.map((l) => ({ id: l.id, teilnehmer_id: l.teilnehmerId, json: l }))),
+      "leistungen"
     );
   if (daten.checklisten?.length)
-    fehlerLoggen("checklisten")(await sb.from("checklisten").upsert(jsonZeilen(daten.checklisten)));
+    pruefen(await sb.from("checklisten").upsert(jsonZeilen(daten.checklisten)), "checklisten");
   if (daten.stoppuhrSessions?.length)
-    fehlerLoggen("stoppuhr")(
-      await sb.from("stoppuhr_sessions").upsert(jsonZeilen(daten.stoppuhrSessions))
+    pruefen(
+      await sb.from("stoppuhr_sessions").upsert(jsonZeilen(daten.stoppuhrSessions)),
+      "stoppuhr"
     );
   if (daten.platzplaene?.length)
-    fehlerLoggen("platzplaene")(await sb.from("platzplaene").upsert(jsonZeilen(daten.platzplaene)));
+    pruefen(await sb.from("platzplaene").upsert(jsonZeilen(daten.platzplaene)), "platzplaene");
   if (daten.sportabzeichen?.length)
-    fehlerLoggen("sportabzeichen")(
+    pruefen(
       await sb.from("sportabzeichen").upsert(
         daten.sportabzeichen.map((e) => ({
           jahr: e.jahr,
@@ -184,14 +224,16 @@ async function datenSchreiben(daten: Partial<AppDaten>) {
           json: e,
         })),
         { onConflict: "user_id,jahr,teilnehmer_id" }
-      )
+      ),
+      "sportabzeichen"
     );
-  if (daten.einstellungen)
-    fehlerLoggen("einstellungen")(
+  if (daten.einstellungen && Object.keys(daten.einstellungen).length > 0)
+    pruefen(
       await sb.from("einstellungen").upsert(
         Object.entries(daten.einstellungen).map(([key, wert]) => ({ key, wert })),
         { onConflict: "user_id,key" }
-      )
+      ),
+      "einstellungen"
     );
 }
 
@@ -218,7 +260,49 @@ export function DatenProvider({ children }: { children: ReactNode }) {
   const [angemeldet, setAngemeldet] = useState(false);
   const [nutzerEmail, setNutzerEmail] = useState<string | null>(null);
   const [entwurf, setEntwurf] = useState<string[]>([]);
+  const [offline, setOffline] = useState(false);
+  const [wartendeAenderungen, setWartendeAenderungen] = useState(0);
+
   const geladenFuer = useRef<string | null>(null);
+  const userIdRef = useRef<string | null>(null);
+  const warteschlange = useRef<SchreibAktion[]>([]);
+  const flushLaeuft = useRef(false);
+
+  // ===== Warteschlange =====
+
+  const flushen = useCallback(async () => {
+    if (flushLaeuft.current || !userIdRef.current) return;
+    flushLaeuft.current = true;
+    try {
+      while (warteschlange.current.length > 0) {
+        const ergebnis = await aktionAusfuehren(warteschlange.current[0]);
+        if (ergebnis === "netzfehler") {
+          setOffline(true);
+          return;
+        }
+        warteschlange.current.shift();
+        warteschlangeSpeichern(userIdRef.current, warteschlange.current);
+        setWartendeAenderungen(warteschlange.current.length);
+      }
+      setOffline(false);
+    } finally {
+      flushLaeuft.current = false;
+    }
+  }, []);
+
+  /** Schreibaktion einreihen und sofort versuchen zu synchronisieren. */
+  const schreiben = useCallback(
+    (aktion: SchreibAktion) => {
+      if (!supabase || !userIdRef.current) return;
+      warteschlange.current.push(aktion);
+      warteschlangeSpeichern(userIdRef.current, warteschlange.current);
+      setWartendeAenderungen(warteschlange.current.length);
+      void flushen();
+    },
+    [flushen]
+  );
+
+  // ===== Start & Anmeldung =====
 
   useEffect(() => {
     try {
@@ -236,19 +320,39 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     const laden = async (userId: string, email: string | null) => {
       if (geladenFuer.current === userId) return;
       geladenFuer.current = userId;
+      userIdRef.current = userId;
       setNutzerEmail(email);
+
+      // 1) Sofortstart aus dem lokalen Cache (auch offline nutzbar).
+      const cache = cacheLaden(userId);
+      if (cache) {
+        setDaten(cache);
+        setAngemeldet(true);
+        setBereit(true);
+      }
+
+      // 2) Offene Änderungen aus früheren Offline-Phasen nachziehen.
+      warteschlange.current = warteschlangeLaden(userId);
+      setWartendeAenderungen(warteschlange.current.length);
+      await flushen();
+
+      // 3) Frischen Stand vom Server holen.
       try {
         let alles = await allesLaden();
-        // Erster Login: Übungs-Startbestand einspielen.
         if (alles.uebungen.length === 0) {
+          // Erster Login: Übungs-Startbestand einspielen.
           await datenSchreiben({ uebungen: SEED_UEBUNGEN });
           alles = { ...alles, uebungen: SEED_UEBUNGEN };
         }
         setDaten(alles);
-        setAngemeldet(true);
+        cacheSpeichern(userId, alles);
+        setOffline(false);
       } catch (e) {
-        console.error("Daten konnten nicht geladen werden:", e);
+        // Kein Netz (oder Serverfehler): mit Cache weiterarbeiten.
+        console.warn("Serverdaten nicht erreichbar – Offline-Modus:", e);
+        setOffline(true);
       }
+      setAngemeldet(true);
       setBereit(true);
     };
 
@@ -265,15 +369,40 @@ export function DatenProvider({ children }: { children: ReactNode }) {
         void laden(session.user.id, session.user.email ?? null);
       } else {
         geladenFuer.current = null;
+        userIdRef.current = null;
         setAngemeldet(false);
         setNutzerEmail(null);
         setDaten(LEER);
         setBereit(true);
       }
     });
-    return () => abo.subscription.unsubscribe();
-  }, []);
 
+    // Bei Wiederverbindung: Warteschlange nachziehen, dann Serverstand holen.
+    const beiOnline = () => {
+      void (async () => {
+        await flushen();
+        if (!userIdRef.current || warteschlange.current.length > 0) return;
+        try {
+          const alles = await allesLaden();
+          setDaten(alles);
+          cacheSpeichern(userIdRef.current, alles);
+          setOffline(false);
+        } catch {
+          setOffline(true);
+        }
+      })();
+    };
+    const beiOffline = () => setOffline(true);
+    window.addEventListener("online", beiOnline);
+    window.addEventListener("offline", beiOffline);
+    return () => {
+      abo.subscription.unsubscribe();
+      window.removeEventListener("online", beiOnline);
+      window.removeEventListener("offline", beiOffline);
+    };
+  }, [flushen]);
+
+  // Merkliste sichern
   useEffect(() => {
     if (!bereit) return;
     try {
@@ -282,6 +411,12 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       // localStorage voll/gesperrt – Merkliste ist verzichtbar.
     }
   }, [entwurf, bereit]);
+
+  // Datencache aktuell halten (macht Lesen offline & Sofortstart möglich).
+  useEffect(() => {
+    if (!bereit || !angemeldet || !userIdRef.current) return;
+    cacheSpeichern(userIdRef.current, daten);
+  }, [daten, bereit, angemeldet]);
 
   // ===== Konto =====
 
@@ -315,12 +450,13 @@ export function DatenProvider({ children }: { children: ReactNode }) {
             : [...liste, objekt],
         };
       });
-      void supabase
-        ?.from(tabelle)
-        .upsert({ id: objekt.id, json: objekt, ...extraSpalten })
-        .then(fehlerLoggen(tabelle));
+      schreiben({
+        tabelle,
+        typ: "upsert",
+        zeile: { id: objekt.id, json: objekt, ...extraSpalten },
+      });
     },
-    []
+    [schreiben]
   );
 
   const entfernen = useCallback(
@@ -329,9 +465,9 @@ export function DatenProvider({ children }: { children: ReactNode }) {
         ...d,
         [feld]: (d[feld] as unknown as { id: string }[]).filter((x) => x.id !== id),
       }));
-      void supabase?.from(tabelle).delete().eq("id", id).then(fehlerLoggen(tabelle));
+      schreiben({ tabelle, typ: "loeschen", filter: { id } });
     },
-    []
+    [schreiben]
   );
 
   // ===== Übungen & Medien =====
@@ -341,56 +477,57 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     [upsert]
   );
 
-  const uebungLoeschen = useCallback((id: string) => {
-    setDaten((d) => {
-      // Zugehörige Mediendateien im Storage mit entfernen.
-      const pfade = d.medien
-        .filter((m) => m.uebungId === id && m.dateiname?.includes("/"))
-        .map((m) => m.dateiname!);
-      if (pfade.length > 0) {
-        void supabase?.storage.from("medien").remove(pfade);
-      }
-      return {
-        ...d,
-        uebungen: d.uebungen.filter((x) => x.id !== id),
-        medien: d.medien.filter((m) => m.uebungId !== id),
-      };
-    });
-    setEntwurf((e) => e.filter((x) => x !== id));
-    void supabase?.from("uebungen").delete().eq("id", id).then(fehlerLoggen("uebungen"));
-    void supabase?.from("medien").delete().eq("uebung_id", id).then(fehlerLoggen("medien"));
-  }, []);
-
-  const favoritUmschalten = useCallback((id: string) => {
-    setDaten((d) => {
-      const u = d.uebungen.find((x) => x.id === id);
-      if (u) {
-        const neu = { ...u, favorit: !u.favorit };
-        void supabase
-          ?.from("uebungen")
-          .upsert({ id: neu.id, json: neu })
-          .then(fehlerLoggen("uebungen"));
+  const uebungLoeschen = useCallback(
+    (id: string) => {
+      setDaten((d) => {
+        // Zugehörige Speicherdateien bestmöglich mit entfernen.
+        const pfade = d.medien
+          .filter((m) => m.uebungId === id && m.dateiname?.includes("/"))
+          .map((m) => m.dateiname!);
+        if (pfade.length > 0) {
+          void supabase?.storage.from("medien").remove(pfade);
+        }
         return {
           ...d,
-          uebungen: d.uebungen.map((x) => (x.id === id ? neu : x)),
+          uebungen: d.uebungen.filter((x) => x.id !== id),
+          medien: d.medien.filter((m) => m.uebungId !== id),
         };
-      }
-      return d;
-    });
-  }, []);
+      });
+      setEntwurf((e) => e.filter((x) => x !== id));
+      schreiben({ tabelle: "uebungen", typ: "loeschen", filter: { id } });
+      schreiben({ tabelle: "medien", typ: "loeschen", filter: { uebung_id: id } });
+    },
+    [schreiben]
+  );
+
+  const favoritUmschalten = useCallback(
+    (id: string) => {
+      setDaten((d) => {
+        const u = d.uebungen.find((x) => x.id === id);
+        if (!u) return d;
+        const neu = { ...u, favorit: !u.favorit };
+        schreiben({ tabelle: "uebungen", typ: "upsert", zeile: { id: neu.id, json: neu } });
+        return { ...d, uebungen: d.uebungen.map((x) => (x.id === id ? neu : x)) };
+      });
+    },
+    [schreiben]
+  );
 
   const mediumHochladen = useCallback(
     async (uebungId: string, datei: File, reihenfolge: number): Promise<Medium | null> => {
-      if (!supabase) return null;
-      const { data: sessionDaten } = await supabase.auth.getUser();
-      const userId = sessionDaten.user?.id;
-      if (!userId) return null;
+      if (!supabase || !userIdRef.current) return null;
       const endung = (datei.name.split(".").pop() ?? "bin").toLowerCase();
       const istVideo = ["mp4", "webm", "mov", "m4v"].includes(endung);
-      const pfad = `${userId}/${neueId()}.${endung}`;
-      const { error } = await supabase.storage.from("medien").upload(pfad, datei);
-      if (error) {
-        console.error("Upload fehlgeschlagen:", error.message);
+      const pfad = `${userIdRef.current}/${neueId()}.${endung}`;
+      try {
+        const { error } = await supabase.storage.from("medien").upload(pfad, datei);
+        if (error) {
+          console.error("Upload fehlgeschlagen:", error.message);
+          return null;
+        }
+      } catch (e) {
+        // Datei-Uploads brauchen eine Verbindung – bewusst nicht eingereiht.
+        console.error("Upload fehlgeschlagen (offline?):", e);
         return null;
       }
       const medium: Medium = {
@@ -400,13 +537,15 @@ export function DatenProvider({ children }: { children: ReactNode }) {
         dateiname: pfad,
         reihenfolge,
       };
-      fehlerLoggen("medien")(
-        await supabase.from("medien").upsert({ id: medium.id, uebung_id: uebungId, json: medium })
-      );
       setDaten((d) => ({ ...d, medien: [...d.medien, medium] }));
+      schreiben({
+        tabelle: "medien",
+        typ: "upsert",
+        zeile: { id: medium.id, uebung_id: uebungId, json: medium },
+      });
       return medium;
     },
-    []
+    [schreiben]
   );
 
   const mediumSpeichern = useCallback(
@@ -414,16 +553,19 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     [upsert]
   );
 
-  const mediumLoeschen = useCallback((id: string) => {
-    setDaten((d) => {
-      const m = d.medien.find((x) => x.id === id);
-      if (m?.dateiname?.includes("/")) {
-        void supabase?.storage.from("medien").remove([m.dateiname]);
-      }
-      return { ...d, medien: d.medien.filter((x) => x.id !== id) };
-    });
-    void supabase?.from("medien").delete().eq("id", id).then(fehlerLoggen("medien"));
-  }, []);
+  const mediumLoeschen = useCallback(
+    (id: string) => {
+      setDaten((d) => {
+        const m = d.medien.find((x) => x.id === id);
+        if (m?.dateiname?.includes("/")) {
+          void supabase?.storage.from("medien").remove([m.dateiname]);
+        }
+        return { ...d, medien: d.medien.filter((x) => x.id !== id) };
+      });
+      schreiben({ tabelle: "medien", typ: "loeschen", filter: { id } });
+    },
+    [schreiben]
+  );
 
   // ===== Übrige Entitäten =====
 
@@ -440,25 +582,20 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     (t: Teilnehmer) => upsert("teilnehmer", "teilnehmer", t),
     [upsert]
   );
-  const teilnehmerLoeschen = useCallback((id: string) => {
-    setDaten((d) => ({
-      ...d,
-      teilnehmer: d.teilnehmer.filter((x) => x.id !== id),
-      leistungen: d.leistungen.filter((l) => l.teilnehmerId !== id),
-      sportabzeichen: d.sportabzeichen.filter((s) => s.teilnehmerId !== id),
-    }));
-    void supabase?.from("teilnehmer").delete().eq("id", id).then(fehlerLoggen("teilnehmer"));
-    void supabase
-      ?.from("leistungen")
-      .delete()
-      .eq("teilnehmer_id", id)
-      .then(fehlerLoggen("leistungen"));
-    void supabase
-      ?.from("sportabzeichen")
-      .delete()
-      .eq("teilnehmer_id", id)
-      .then(fehlerLoggen("sportabzeichen"));
-  }, []);
+  const teilnehmerLoeschen = useCallback(
+    (id: string) => {
+      setDaten((d) => ({
+        ...d,
+        teilnehmer: d.teilnehmer.filter((x) => x.id !== id),
+        leistungen: d.leistungen.filter((l) => l.teilnehmerId !== id),
+        sportabzeichen: d.sportabzeichen.filter((s) => s.teilnehmerId !== id),
+      }));
+      schreiben({ tabelle: "teilnehmer", typ: "loeschen", filter: { id } });
+      schreiben({ tabelle: "leistungen", typ: "loeschen", filter: { teilnehmer_id: id } });
+      schreiben({ tabelle: "sportabzeichen", typ: "loeschen", filter: { teilnehmer_id: id } });
+    },
+    [schreiben]
+  );
 
   const leistungSpeichern = useCallback(
     (l: Leistung) => upsert("leistungen", "leistungen", l, { teilnehmer_id: l.teilnehmerId }),
@@ -496,51 +633,60 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     [entfernen]
   );
 
-  const sportabzeichenSpeichern = useCallback((e: SportabzeichenEintrag) => {
-    setDaten((d) => {
-      const vorhanden = d.sportabzeichen.some(
-        (x) => x.jahr === e.jahr && x.teilnehmerId === e.teilnehmerId
-      );
-      return {
+  const sportabzeichenSpeichern = useCallback(
+    (e: SportabzeichenEintrag) => {
+      setDaten((d) => {
+        const vorhanden = d.sportabzeichen.some(
+          (x) => x.jahr === e.jahr && x.teilnehmerId === e.teilnehmerId
+        );
+        return {
+          ...d,
+          sportabzeichen: vorhanden
+            ? d.sportabzeichen.map((x) =>
+                x.jahr === e.jahr && x.teilnehmerId === e.teilnehmerId ? e : x
+              )
+            : [...d.sportabzeichen, e],
+        };
+      });
+      schreiben({
+        tabelle: "sportabzeichen",
+        typ: "upsert",
+        zeile: { jahr: e.jahr, teilnehmer_id: e.teilnehmerId, json: e },
+        onConflict: "user_id,jahr,teilnehmer_id",
+      });
+    },
+    [schreiben]
+  );
+
+  const sportabzeichenLoeschen = useCallback(
+    (jahr: number, teilnehmerId: string) => {
+      setDaten((d) => ({
         ...d,
-        sportabzeichen: vorhanden
-          ? d.sportabzeichen.map((x) =>
-              x.jahr === e.jahr && x.teilnehmerId === e.teilnehmerId ? e : x
-            )
-          : [...d.sportabzeichen, e],
-      };
-    });
-    void supabase
-      ?.from("sportabzeichen")
-      .upsert(
-        { jahr: e.jahr, teilnehmer_id: e.teilnehmerId, json: e },
-        { onConflict: "user_id,jahr,teilnehmer_id" }
-      )
-      .then(fehlerLoggen("sportabzeichen"));
-  }, []);
+        sportabzeichen: d.sportabzeichen.filter(
+          (x) => !(x.jahr === jahr && x.teilnehmerId === teilnehmerId)
+        ),
+      }));
+      schreiben({
+        tabelle: "sportabzeichen",
+        typ: "loeschen",
+        filter: { jahr, teilnehmer_id: teilnehmerId },
+      });
+    },
+    [schreiben]
+  );
 
-  const sportabzeichenLoeschen = useCallback((jahr: number, teilnehmerId: string) => {
-    setDaten((d) => ({
-      ...d,
-      sportabzeichen: d.sportabzeichen.filter(
-        (x) => !(x.jahr === jahr && x.teilnehmerId === teilnehmerId)
-      ),
-    }));
-    void supabase
-      ?.from("sportabzeichen")
-      .delete()
-      .eq("jahr", jahr)
-      .eq("teilnehmer_id", teilnehmerId)
-      .then(fehlerLoggen("sportabzeichen"));
-  }, []);
-
-  const einstellungSetzen = useCallback((key: string, wert: unknown) => {
-    setDaten((d) => ({ ...d, einstellungen: { ...d.einstellungen, [key]: wert } }));
-    void supabase
-      ?.from("einstellungen")
-      .upsert({ key, wert }, { onConflict: "user_id,key" })
-      .then(fehlerLoggen("einstellungen"));
-  }, []);
+  const einstellungSetzen = useCallback(
+    (key: string, wert: unknown) => {
+      setDaten((d) => ({ ...d, einstellungen: { ...d.einstellungen, [key]: wert } }));
+      schreiben({
+        tabelle: "einstellungen",
+        typ: "upsert",
+        zeile: { key, wert },
+        onConflict: "user_id,key",
+      });
+    },
+    [schreiben]
+  );
 
   // ===== Merkliste =====
 
@@ -552,7 +698,7 @@ export function DatenProvider({ children }: { children: ReactNode }) {
 
   const entwurfLeeren = useCallback(() => setEntwurf([]), []);
 
-  // ===== Import / Übernahme =====
+  // ===== Import / Übernahme (brauchen eine Verbindung) =====
 
   const datenImportieren = useCallback(
     async (json: string, modus: "ersetzen" | "zusammenfuehren"): Promise<string | null> => {
@@ -569,11 +715,15 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       try {
         if (modus === "ersetzen") await allesLoeschen();
         await datenSchreiben(geparst);
-        setDaten(await allesLaden());
+        const alles = await allesLaden();
+        setDaten(alles);
+        if (userIdRef.current) cacheSpeichern(userIdRef.current, alles);
         return null;
       } catch (e) {
         console.error("Import fehlgeschlagen:", e);
-        return "Der Import ist fehlgeschlagen.";
+        return istNetzwerkFehler((e as Error).message)
+          ? "Keine Verbindung – der Import braucht Internet."
+          : "Der Import ist fehlgeschlagen.";
       }
     },
     []
@@ -585,10 +735,8 @@ export function DatenProvider({ children }: { children: ReactNode }) {
    * alte API-Route /api/export noch die Daten und /api/medien/datei die Dateien.
    */
   const lokaleDatenUebernehmen = useCallback(async (): Promise<string | null> => {
-    if (!supabase) return "Supabase ist nicht konfiguriert.";
-    const { data: sessionDaten } = await supabase.auth.getUser();
-    const userId = sessionDaten.user?.id;
-    if (!userId) return "Nicht angemeldet.";
+    if (!supabase || !userIdRef.current) return "Nicht angemeldet.";
+    const userId = userIdRef.current;
 
     let alt: AppDaten;
     try {
@@ -622,7 +770,9 @@ export function DatenProvider({ children }: { children: ReactNode }) {
 
     try {
       await datenSchreiben(alt);
-      setDaten(await allesLaden());
+      const alles = await allesLaden();
+      setDaten(alles);
+      cacheSpeichern(userId, alles);
     } catch (e) {
       console.error("Übernahme fehlgeschlagen:", e);
       return "Die Übernahme ist fehlgeschlagen.";
@@ -641,6 +791,8 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       nutzerEmail,
       anmeldenMitGoogle,
       abmelden,
+      offline,
+      wartendeAenderungen,
       uebungSpeichern,
       uebungLoeschen,
       favoritUmschalten,
@@ -675,6 +827,8 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       nutzerEmail,
       anmeldenMitGoogle,
       abmelden,
+      offline,
+      wartendeAenderungen,
       uebungSpeichern,
       uebungLoeschen,
       favoritUmschalten,

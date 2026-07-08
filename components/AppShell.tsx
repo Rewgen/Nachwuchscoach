@@ -7,6 +7,7 @@ import {
   Activity,
   CalendarPlus,
   ClipboardList,
+  CloudOff,
   Database,
   Dumbbell,
   LayoutDashboard,
@@ -15,6 +16,7 @@ import {
   Medal,
   Menu,
   PencilRuler,
+  RefreshCw,
   Timer,
   Users,
 } from "lucide-react";
@@ -70,7 +72,16 @@ function istAktiv(pfad: string, href: string): boolean {
 
 export default function AppShell({ children }: { children: ReactNode }) {
   const pfad = usePathname();
-  const { entwurf, bereit, angemeldet, konfigFehlt, nutzerEmail, abmelden } = useDaten();
+  const {
+    entwurf,
+    bereit,
+    angemeldet,
+    konfigFehlt,
+    nutzerEmail,
+    abmelden,
+    offline,
+    wartendeAenderungen,
+  } = useDaten();
   const merklisteAnzahl = bereit ? entwurf.length : 0;
 
   // Anmelde-Gate: ohne Konto (oder ohne Konfiguration) nur die Login-Ansicht.
@@ -170,7 +181,32 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
       {/* Inhalt */}
       <main className="min-w-0 flex-1 px-4 pb-24 pt-16 sm:px-6 lg:ml-60 lg:pb-10 lg:pt-6">
-        <div className="mx-auto max-w-6xl">{children}</div>
+        <div className="mx-auto max-w-6xl">
+          {(offline || wartendeAenderungen > 0) && (
+            <div className="print-verbergen mb-4 flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {offline ? (
+                <>
+                  <CloudOff size={15} className="shrink-0" />
+                  <span>
+                    Offline – du kannst weiterarbeiten. Änderungen werden gespeichert und
+                    synchronisiert, sobald du wieder online bist
+                    {wartendeAenderungen > 0 ? ` (${wartendeAenderungen} ausstehend)` : ""}.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw size={15} className="shrink-0 animate-spin" />
+                  <span>
+                    {wartendeAenderungen}{" "}
+                    {wartendeAenderungen === 1 ? "Änderung wird" : "Änderungen werden"}{" "}
+                    synchronisiert …
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+          {children}
+        </div>
       </main>
 
       {/* Tab-Leiste (Mobil) */}

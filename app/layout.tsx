@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { DatenProvider } from "@/lib/store";
 import AppShell from "@/components/AppShell";
+import ServiceWorkerRegistrierung from "@/components/ServiceWorkerRegistrierung";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -30,6 +31,7 @@ export default function RootLayout({
         <DatenProvider>
           <AppShell>{children}</AppShell>
         </DatenProvider>
+        <ServiceWorkerRegistrierung />
       </body>
     </html>
   );
