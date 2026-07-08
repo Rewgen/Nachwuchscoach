@@ -45,10 +45,21 @@ Vom Handy im selben WLAN erreichbar unter `http://<PC-IP>:3000`.
   Einstellungen“ → „Lokale Daten übernehmen“, inkl. Mediendateien).
 - Design: hell, flach, Inter; Seitenleiste am Desktop, Tab-Leiste am Handy
 
+## Offline-Modus
+
+Die App ist offline nutzbar: Beim Start werden die Daten sofort aus einem
+lokalen Cache angezeigt und im Hintergrund vom Server aktualisiert. Ohne Netz
+(Sportplatz!) funktioniert Lesen und Ändern weiter – Änderungen landen in
+einer Warteschlange (`lib/offline.ts`) und werden bei Wiederverbindung in
+ursprünglicher Reihenfolge synchronisiert (Banner zeigt den Status). Ein
+Service Worker (`public/sw.js`, nur im Produktions-Build aktiv) hält
+App-Oberfläche, Build-Assets und Medien offline vor. Nur Datei-Uploads,
+Import/Export und der Login selbst brauchen eine Verbindung.
+
 ## Roadmap
 
-1. Offline-Modus als PWA (lokaler Cache + Schreib-Warteschlange, Sync bei
-   Wiederverbindung)
+1. „App installieren“ (PWA-Manifest + Icons, Android) – Service Worker ist
+   schon vorhanden, es fehlen Manifest und Icons
 2. Alte SQLite-Schicht entfernen, sobald die Datenübernahme erledigt ist
 3. Später laut Konzept: Community-Übungen mit Prüfung/Bewertung,
    Videoproduktion, KI-Trainingsplanung, Ausbau auf Sportunterricht

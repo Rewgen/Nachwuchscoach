@@ -61,9 +61,23 @@ des Codes (Bezeichner, Kommentare): **Deutsch**.
 - `npm run build` NIE bei laufendem `next dev` ausführen (zerschießt dessen
   `.next`-Cache → 500er; Dev-Server danach neu starten).
 
+## Offline-Architektur
+
+- `lib/offline.ts`: Datencache + Schreib-Warteschlange pro Nutzer
+  (localStorage). Der Store reiht JEDE Schreibaktion ein und flusht sofort –
+  bei Netzfehlern bleibt sie liegen und wird beim online-Event in Reihenfolge
+  nachgezogen. Fachliche Fehler (z. B. RLS) werden geloggt und NICHT
+  wiederholt. Datei-Uploads/Import/Export brauchen bewusst eine Verbindung.
+- `public/sw.js` (nur Produktion, Registrierung in
+  `components/ServiceWorkerRegistrierung.tsx`): Navigationen Netz-zuerst mit
+  Cache-Fallback auf `/`, `/_next/static/` und Storage-Medien Cache-zuerst.
+  Bei SW-Änderungen die VERSION-Konstante hochzählen.
+
 ## Roadmap (nicht ungefragt bauen)
 
-1. Offline-Modus (PWA, Schreib-Warteschlange mit Sync).
+1. „App installieren“ (Android): PWA-Manifest + Icons (192/512 maskable) +
+   Meta-Tags ergänzen – Service Worker existiert schon. Ausdrücklicher
+   Nutzerwunsch, auf „später“ verschoben.
 2. Alte SQLite-Schicht (`lib/server`, `app/api`) entfernen, sobald Nils die
    lokale Datenübernahme erledigt hat.
 3. Community-Übungen mit Prüfung/Bewertung, Videos, KI-Planung (Konzept-Datei:
