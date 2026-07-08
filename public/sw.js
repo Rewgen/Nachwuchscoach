@@ -4,7 +4,7 @@
 // - Supabase-Storage-Medien (Bilder/Videos): Cache zuerst
 // Die Nutzdaten selbst cached die App-Schicht (lib/offline.ts), nicht der SW.
 
-const VERSION = "v1";
+const VERSION = "v2";
 const CACHE_SEITEN = `nachwuchscoach-seiten-${VERSION}`;
 const CACHE_STATISCH = `nachwuchscoach-statisch-${VERSION}`;
 const CACHE_MEDIEN = `nachwuchscoach-medien-${VERSION}`;
@@ -53,8 +53,14 @@ self.addEventListener("fetch", (ereignis) => {
     return;
   }
 
-  // Gehashte Build-Assets: unveränderlich, Cache zuerst.
-  if (url.origin === self.location.origin && url.pathname.startsWith("/_next/static/")) {
+  // Gehashte Build-Assets, App-Icons und Manifest: Cache zuerst.
+  if (
+    url.origin === self.location.origin &&
+    (url.pathname.startsWith("/_next/static/") ||
+      url.pathname.startsWith("/icon-") ||
+      url.pathname === "/apple-touch-icon.png" ||
+      url.pathname === "/manifest.webmanifest")
+  ) {
     ereignis.respondWith(cacheZuerst(CACHE_STATISCH, anfrage));
     return;
   }

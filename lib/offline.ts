@@ -38,6 +38,14 @@ export function cacheSpeichern(userId: string, daten: AppDaten): void {
   }
 }
 
+export function cacheLoeschen(userId: string): void {
+  try {
+    localStorage.removeItem(CACHE_PREFIX + userId);
+  } catch {
+    // egal
+  }
+}
+
 export function warteschlangeLaden(userId: string): SchreibAktion[] {
   try {
     const roh = localStorage.getItem(QUEUE_PREFIX + userId);

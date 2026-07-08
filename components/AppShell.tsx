@@ -12,6 +12,7 @@ import {
   Dumbbell,
   LayoutDashboard,
   ListChecks,
+  LogIn,
   LogOut,
   Medal,
   Menu,
@@ -76,16 +77,18 @@ export default function AppShell({ children }: { children: ReactNode }) {
     entwurf,
     bereit,
     angemeldet,
+    gastModus,
     konfigFehlt,
     nutzerEmail,
     abmelden,
+    anmeldenMitGoogle,
     offline,
     wartendeAenderungen,
   } = useDaten();
   const merklisteAnzahl = bereit ? entwurf.length : 0;
 
-  // Anmelde-Gate: ohne Konto (oder ohne Konfiguration) nur die Login-Ansicht.
-  if (bereit && (!angemeldet || konfigFehlt)) {
+  // Anmelde-Gate: ohne Konto UND ohne Gast-Modus nur die Login-Ansicht.
+  if (bereit && !angemeldet && !gastModus) {
     return <LoginSeite />;
   }
   if (!bereit) {
@@ -149,17 +152,40 @@ export default function AppShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="flex items-center gap-2 border-t border-slate-200 px-4 py-3">
-          <span className="min-w-0 flex-1 truncate text-[11px] text-slate-400" title={nutzerEmail ?? ""}>
-            {nutzerEmail ?? "Angemeldet"}
-          </span>
-          <button
-            type="button"
-            onClick={abmelden}
-            className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
-            title="Abmelden"
-          >
-            <LogOut size={14} />
-          </button>
+          {gastModus ? (
+            <>
+              <span className="min-w-0 flex-1 truncate text-[11px] text-slate-400">
+                Ohne Konto – Daten nur auf diesem Gerät
+              </span>
+              {!konfigFehlt && (
+                <button
+                  type="button"
+                  onClick={anmeldenMitGoogle}
+                  className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-sky-700"
+                  title="Mit Google anmelden (Daten werden übernommen)"
+                >
+                  <LogIn size={14} />
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <span
+                className="min-w-0 flex-1 truncate text-[11px] text-slate-400"
+                title={nutzerEmail ?? ""}
+              >
+                {nutzerEmail ?? "Angemeldet"}
+              </span>
+              <button
+                type="button"
+                onClick={abmelden}
+                className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                title="Abmelden"
+              >
+                <LogOut size={14} />
+              </button>
+            </>
+          )}
         </div>
       </aside>
 
@@ -169,14 +195,28 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <Activity size={15} />
         </span>
         <span className="flex-1 text-sm font-semibold text-slate-900">Nachwuchscoach</span>
-        <button
-          type="button"
-          onClick={abmelden}
-          className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
-          title="Abmelden"
-        >
-          <LogOut size={16} />
-        </button>
+        {gastModus ? (
+          !konfigFehlt && (
+            <button
+              type="button"
+              onClick={anmeldenMitGoogle}
+              className="flex items-center gap-1 rounded-md bg-sky-50 px-2 py-1 text-xs font-medium text-sky-800 transition-colors hover:bg-sky-100"
+              title="Mit Google anmelden (Daten werden übernommen)"
+            >
+              <LogIn size={13} />
+              Anmelden
+            </button>
+          )
+        ) : (
+          <button
+            type="button"
+            onClick={abmelden}
+            className="rounded p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+            title="Abmelden"
+          >
+            <LogOut size={16} />
+          </button>
+        )}
       </header>
 
       {/* Inhalt */}

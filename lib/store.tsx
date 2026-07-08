@@ -25,6 +25,7 @@ import type {
 import { supabase, supabaseKonfiguriert, storageUrl } from "./supabase";
 import {
   cacheLaden,
+  cacheLoeschen,
   cacheSpeichern,
   istNetzwerkFehler,
   warteschlangeLaden,
@@ -41,6 +42,9 @@ import { SEED_UEBUNGEN } from "./seed";
 // nachgezogen (Row Level Security trennt die Konten serverseitig).
 
 const MERKLISTE_KEY = "nachwuchscoach-merkliste";
+// Gast-Modus: App ohne Konto, Daten bleiben nur auf diesem Gerät.
+const GAST_ID = "gast";
+const GAST_FLAG = "nachwuchscoach-gastmodus";
 
 interface StoreWert {
   bereit: boolean;
@@ -52,6 +56,9 @@ interface StoreWert {
   nutzerEmail: string | null;
   anmeldenMitGoogle: () => void;
   abmelden: () => void;
+  /** true = App läuft ohne Konto, Daten nur auf diesem Gerät. */
+  gastModus: boolean;
+  alsGastFortfahren: () => void;
   // Offline
   offline: boolean;
   wartendeAenderungen: number;
@@ -87,7 +94,6 @@ interface StoreWert {
   entwurfLeeren: () => void;
   // Datenverwaltung
   datenImportieren: (json: string, modus: "ersetzen" | "zusammenfuehren") => Promise<string | null>;
-  lokaleDatenUebernehmen: () => Promise<string | null>;
 }
 
 const LEER: AppDaten = {
@@ -237,6 +243,52 @@ async function datenSchreiben(daten: Partial<AppDaten>) {
     );
 }
 
+/** Hat der Gast über den Startbestand hinaus etwas angelegt/verändert? */
+function hatEigeneInhalte(d: AppDaten): boolean {
+  return (
+    d.trainings.length > 0 ||
+    d.teilnehmer.length > 0 ||
+    d.leistungen.length > 0 ||
+    d.checklisten.length > 0 ||
+    d.stoppuhrSessions.length > 0 ||
+    d.sportabzeichen.length > 0 ||
+    d.platzplaene.length > 0 ||
+    d.medien.length > 0 ||
+    Object.keys(d.einstellungen).length > 0 ||
+    d.uebungen.some((u) => u.eigene || u.favorit)
+  );
+}
+
+/** Client-seitiges Zusammenführen (für Import im Gast-Modus). */
+function datenZusammenfuehren(basis: AppDaten, teil: Partial<AppDaten>): AppDaten {
+  const mischen = <T extends { id: string }>(alt: T[], neu?: T[]): T[] => {
+    if (!neu?.length) return alt;
+    const map = new Map(alt.map((x) => [x.id, x]));
+    for (const n of neu) if (n?.id) map.set(n.id, n);
+    return [...map.values()];
+  };
+  const sportabzeichen = (() => {
+    if (!teil.sportabzeichen?.length) return basis.sportabzeichen;
+    const map = new Map(
+      basis.sportabzeichen.map((x) => [`${x.jahr}|${x.teilnehmerId}`, x])
+    );
+    for (const n of teil.sportabzeichen) map.set(`${n.jahr}|${n.teilnehmerId}`, n);
+    return [...map.values()];
+  })();
+  return {
+    uebungen: mischen(basis.uebungen, teil.uebungen),
+    medien: mischen(basis.medien, teil.medien),
+    trainings: mischen(basis.trainings, teil.trainings),
+    teilnehmer: mischen(basis.teilnehmer, teil.teilnehmer),
+    leistungen: mischen(basis.leistungen, teil.leistungen),
+    checklisten: mischen(basis.checklisten, teil.checklisten),
+    stoppuhrSessions: mischen(basis.stoppuhrSessions, teil.stoppuhrSessions),
+    sportabzeichen,
+    platzplaene: mischen(basis.platzplaene, teil.platzplaene),
+    einstellungen: { ...basis.einstellungen, ...(teil.einstellungen ?? {}) },
+  };
+}
+
 /** Alle eigenen Zeilen löschen (für Import im Modus "ersetzen"). */
 async function allesLoeschen() {
   const sb = supabase!;
@@ -263,8 +315,10 @@ export function DatenProvider({ children }: { children: ReactNode }) {
   const [offline, setOffline] = useState(false);
   const [wartendeAenderungen, setWartendeAenderungen] = useState(0);
 
+  const [gastModus, setGastModus] = useState(false);
   const geladenFuer = useRef<string | null>(null);
   const userIdRef = useRef<string | null>(null);
+  const gastRef = useRef(false);
   const warteschlange = useRef<SchreibAktion[]>([]);
   const flushLaeuft = useRef(false);
 
@@ -293,6 +347,8 @@ export function DatenProvider({ children }: { children: ReactNode }) {
   /** Schreibaktion einreihen und sofort versuchen zu synchronisieren. */
   const schreiben = useCallback(
     (aktion: SchreibAktion) => {
+      // Gäste schreiben nur in den lokalen Cache (übernimmt der Cache-Effekt).
+      if (gastRef.current) return;
       if (!supabase || !userIdRef.current) return;
       warteschlange.current.push(aktion);
       warteschlangeSpeichern(userIdRef.current, warteschlange.current);
@@ -301,6 +357,29 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     },
     [flushen]
   );
+
+  // ===== Gast-Modus =====
+
+  /** Gast-Modus starten: Daten kommen ausschließlich aus dem lokalen Cache. */
+  const gastStarten = useCallback(() => {
+    gastRef.current = true;
+    userIdRef.current = GAST_ID;
+    setGastModus(true);
+    const cache = cacheLaden(GAST_ID);
+    const start = cache ?? { ...LEER, uebungen: SEED_UEBUNGEN };
+    if (!cache) cacheSpeichern(GAST_ID, start);
+    setDaten(start);
+    setBereit(true);
+  }, []);
+
+  const alsGastFortfahren = useCallback(() => {
+    try {
+      localStorage.setItem(GAST_FLAG, "1");
+    } catch {
+      // ohne Flag startet der Gast-Modus beim nächsten Laden nicht automatisch
+    }
+    gastStarten();
+  }, [gastStarten]);
 
   // ===== Start & Anmeldung =====
 
@@ -313,7 +392,9 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     }
 
     if (!supabase) {
-      setBereit(true);
+      // Ohne Supabase-Konfiguration funktioniert nur der Gast-Modus.
+      if (localStorage.getItem(GAST_FLAG)) gastStarten();
+      else setBereit(true);
       return;
     }
 
@@ -321,6 +402,8 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       if (geladenFuer.current === userId) return;
       geladenFuer.current = userId;
       userIdRef.current = userId;
+      gastRef.current = false;
+      setGastModus(false);
       setNutzerEmail(email);
 
       // 1) Sofortstart aus dem lokalen Cache (auch offline nutzbar).
@@ -344,6 +427,16 @@ export function DatenProvider({ children }: { children: ReactNode }) {
           await datenSchreiben({ uebungen: SEED_UEBUNGEN });
           alles = { ...alles, uebungen: SEED_UEBUNGEN };
         }
+        // Frühere Gast-Daten dieses Geräts einmalig ins Konto übernehmen.
+        const gastDaten = cacheLaden(GAST_ID);
+        if (gastDaten) {
+          if (hatEigeneInhalte(gastDaten)) {
+            await datenSchreiben(gastDaten);
+            alles = await allesLaden();
+          }
+          cacheLoeschen(GAST_ID);
+          localStorage.removeItem(GAST_FLAG);
+        }
         setDaten(alles);
         cacheSpeichern(userId, alles);
         setOffline(false);
@@ -359,6 +452,8 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     void supabase.auth.getSession().then(({ data }) => {
       if (data.session?.user) {
         void laden(data.session.user.id, data.session.user.email ?? null);
+      } else if (localStorage.getItem(GAST_FLAG)) {
+        gastStarten();
       } else {
         setBereit(true);
       }
@@ -367,7 +462,7 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     const { data: abo } = supabase.auth.onAuthStateChange((_ereignis, session) => {
       if (session?.user) {
         void laden(session.user.id, session.user.email ?? null);
-      } else {
+      } else if (!gastRef.current) {
         geladenFuer.current = null;
         userIdRef.current = null;
         setAngemeldet(false);
@@ -400,7 +495,7 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("online", beiOnline);
       window.removeEventListener("offline", beiOffline);
     };
-  }, [flushen]);
+  }, [flushen, gastStarten]);
 
   // Merkliste sichern
   useEffect(() => {
@@ -412,11 +507,13 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     }
   }, [entwurf, bereit]);
 
-  // Datencache aktuell halten (macht Lesen offline & Sofortstart möglich).
+  // Datencache aktuell halten (macht Lesen offline, Sofortstart und den
+  // Gast-Modus möglich – für Gäste ist der Cache der einzige Speicher).
   useEffect(() => {
-    if (!bereit || !angemeldet || !userIdRef.current) return;
+    if (!bereit || !userIdRef.current) return;
+    if (!angemeldet && !gastModus) return;
     cacheSpeichern(userIdRef.current, daten);
-  }, [daten, bereit, angemeldet]);
+  }, [daten, bereit, angemeldet, gastModus]);
 
   // ===== Konto =====
 
@@ -515,6 +612,8 @@ export function DatenProvider({ children }: { children: ReactNode }) {
 
   const mediumHochladen = useCallback(
     async (uebungId: string, datei: File, reihenfolge: number): Promise<Medium | null> => {
+      // Datei-Uploads brauchen ein Konto (Storage-Rechte) – Gäste nutzen YouTube-Links.
+      if (gastRef.current) return null;
       if (!supabase || !userIdRef.current) return null;
       const endung = (datei.name.split(".").pop() ?? "bin").toLowerCase();
       const istVideo = ["mp4", "webm", "mov", "m4v"].includes(endung);
@@ -702,7 +801,6 @@ export function DatenProvider({ children }: { children: ReactNode }) {
 
   const datenImportieren = useCallback(
     async (json: string, modus: "ersetzen" | "zusammenfuehren"): Promise<string | null> => {
-      if (!supabase) return "Supabase ist nicht konfiguriert.";
       let geparst: Partial<AppDaten>;
       try {
         geparst = JSON.parse(json) as Partial<AppDaten>;
@@ -712,6 +810,12 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       if (!geparst || typeof geparst !== "object") {
         return "Die Datei hat nicht das erwartete Format.";
       }
+      // Gäste importieren rein lokal (der Cache-Effekt speichert das Ergebnis).
+      if (gastRef.current) {
+        setDaten((d) => datenZusammenfuehren(modus === "ersetzen" ? LEER : d, geparst));
+        return null;
+      }
+      if (!supabase) return "Supabase ist nicht konfiguriert.";
       try {
         if (modus === "ersetzen") await allesLoeschen();
         await datenSchreiben(geparst);
@@ -729,58 +833,6 @@ export function DatenProvider({ children }: { children: ReactNode }) {
     []
   );
 
-  /**
-   * Einmalige Übernahme der alten lokalen SQLite-Daten (inkl. Mediendateien).
-   * Funktioniert nur am PC, auf dem die alte Version lief – dort liefert die
-   * alte API-Route /api/export noch die Daten und /api/medien/datei die Dateien.
-   */
-  const lokaleDatenUebernehmen = useCallback(async (): Promise<string | null> => {
-    if (!supabase || !userIdRef.current) return "Nicht angemeldet.";
-    const userId = userIdRef.current;
-
-    let alt: AppDaten;
-    try {
-      const res = await fetch("/api/export");
-      if (!res.ok) throw new Error(String(res.status));
-      alt = (await res.json()) as AppDaten;
-    } catch {
-      return "Keine lokalen Daten gefunden. Die Übernahme funktioniert nur am PC mit der alten lokalen Datenbank (npm run dev).";
-    }
-
-    // Mediendateien vom alten lokalen Speicher in den Supabase-Storage heben.
-    let uebertragen = 0;
-    for (const m of alt.medien ?? []) {
-      if (!m.dateiname || m.dateiname.includes("/")) continue;
-      try {
-        const dres = await fetch(`/api/medien/datei/${m.dateiname}`);
-        if (!dres.ok) continue;
-        const blob = await dres.blob();
-        const pfad = `${userId}/${m.dateiname}`;
-        const { error } = await supabase.storage
-          .from("medien")
-          .upload(pfad, blob, { upsert: true });
-        if (!error) {
-          m.dateiname = pfad;
-          uebertragen++;
-        }
-      } catch {
-        // Einzelne Datei fehlt – Rest trotzdem übernehmen.
-      }
-    }
-
-    try {
-      await datenSchreiben(alt);
-      const alles = await allesLaden();
-      setDaten(alles);
-      cacheSpeichern(userId, alles);
-    } catch (e) {
-      console.error("Übernahme fehlgeschlagen:", e);
-      return "Die Übernahme ist fehlgeschlagen.";
-    }
-    console.info(`Lokale Daten übernommen (${uebertragen} Mediendateien).`);
-    return null;
-  }, []);
-
   const wert = useMemo<StoreWert>(
     () => ({
       bereit,
@@ -791,6 +843,8 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       nutzerEmail,
       anmeldenMitGoogle,
       abmelden,
+      gastModus,
+      alsGastFortfahren,
       offline,
       wartendeAenderungen,
       uebungSpeichern,
@@ -817,7 +871,6 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       entwurfUmschalten,
       entwurfLeeren,
       datenImportieren,
-      lokaleDatenUebernehmen,
     }),
     [
       bereit,
@@ -827,6 +880,8 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       nutzerEmail,
       anmeldenMitGoogle,
       abmelden,
+      gastModus,
+      alsGastFortfahren,
       offline,
       wartendeAenderungen,
       uebungSpeichern,
@@ -853,7 +908,6 @@ export function DatenProvider({ children }: { children: ReactNode }) {
       entwurfUmschalten,
       entwurfLeeren,
       datenImportieren,
-      lokaleDatenUebernehmen,
     ]
   );
 
@@ -896,15 +950,11 @@ export function medienFuerUebung(medien: Medium[], uebungId: string): Medium[] {
     .sort((a, b) => a.reihenfolge - b.reihenfolge);
 }
 
-/** URL, unter der eine Mediendatei erreichbar ist. */
+/** URL, unter der eine Mediendatei erreichbar ist (Supabase-Storage). */
 export function mediumUrl(m: Medium): string {
   if (m.typ === "youtube") return m.url ?? "";
   if (!m.dateiname) return "";
-  // Neue Medien liegen im Supabase-Storage (Pfad mit "/"), alte noch in der
-  // lokalen SQLite-Version – bis zur Übernahme über die alte Route ausliefern.
-  return m.dateiname.includes("/")
-    ? storageUrl(m.dateiname)
-    : `/api/medien/datei/${m.dateiname}`;
+  return storageUrl(m.dateiname);
 }
 
 /** YouTube-Video-ID aus einem normalen Link. */

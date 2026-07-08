@@ -34,15 +34,16 @@ Vom Handy im selben WLAN erreichbar unter `http://<PC-IP>:3000`.
 - **Backend**: **Supabase** – Google-Login, Postgres mit Row Level Security
   (jeder Account sieht nur die eigenen Daten), Storage-Bucket für Medien.
   Datenzugriff im Client ausschließlich über `lib/store.tsx`.
+- **Gast-Modus**: Die App ist auch ohne Anmeldung voll nutzbar – Daten bleiben
+  dann nur auf dem Gerät (localStorage). Beim späteren Google-Login werden die
+  Gerätedaten automatisch ins Konto übernommen. Nur Datei-Uploads brauchen ein
+  Konto (YouTube-Links gehen auch als Gast).
 - **Konfiguration**: `.env.local` mit `NEXT_PUBLIC_SUPABASE_URL` und
   `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Vorlage: `.env.local.beispiel`); dieselben
   Variablen sind auf Netlify gesetzt. Datenbank-Schema: `supabase/schema.sql`
   (einmalig im Supabase SQL-Editor ausführen).
 - **Hosting**: Netlify (https://nachwuchscoach.netlify.app), Deploy bei Push
   auf `main`.
-- Die alten SQLite-API-Routen (`app/api/*`, `lib/server/*`) sind veraltet und
-  dienen nur noch der einmaligen Übernahme lokaler Altdaten („Daten &
-  Einstellungen“ → „Lokale Daten übernehmen“, inkl. Mediendateien).
 - Design: hell, flach, Inter; Seitenleiste am Desktop, Tab-Leiste am Handy
 
 ## Offline-Modus
@@ -56,10 +57,15 @@ Service Worker (`public/sw.js`, nur im Produktions-Build aktiv) hält
 App-Oberfläche, Build-Assets und Medien offline vor. Nur Datei-Uploads,
 Import/Export und der Login selbst brauchen eine Verbindung.
 
+## App installieren (PWA)
+
+Die App ist installierbar: Auf Android in Chrome die Live-Seite öffnen →
+Menü (⋮) → **„App installieren“** (bzw. „Zum Startbildschirm hinzufügen“).
+Sie startet dann wie eine normale App im Vollbild, inklusive Offline-Modus
+und Konto-Synchronisierung. Manifest: `public/manifest.webmanifest`,
+Icons per `node scripts/icons.mjs` regenerierbar (braucht `npm i --no-save sharp`).
+
 ## Roadmap
 
-1. „App installieren“ (PWA-Manifest + Icons, Android) – Service Worker ist
-   schon vorhanden, es fehlen Manifest und Icons
-2. Alte SQLite-Schicht entfernen, sobald die Datenübernahme erledigt ist
-3. Später laut Konzept: Community-Übungen mit Prüfung/Bewertung,
-   Videoproduktion, KI-Trainingsplanung, Ausbau auf Sportunterricht
+Später laut Konzept: Community-Übungen mit Prüfung/Bewertung,
+Videoproduktion, KI-Trainingsplanung, Ausbau auf Sportunterricht.

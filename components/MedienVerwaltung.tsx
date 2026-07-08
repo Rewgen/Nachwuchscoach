@@ -19,7 +19,7 @@ export default function MedienVerwaltung({
   /** Meldet neu angelegte Medien-IDs (zum Aufräumen bei Abbruch). */
   onHochgeladen?: (mediumId: string) => void;
 }) {
-  const { daten, mediumHochladen, mediumSpeichern, mediumLoeschen } = useDaten();
+  const { daten, gastModus, mediumHochladen, mediumSpeichern, mediumLoeschen } = useDaten();
   const medien = medienFuerUebung(daten.medien, uebungId);
   const dateiInput = useRef<HTMLInputElement>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
@@ -128,26 +128,35 @@ export default function MedienVerwaltung({
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => dateiInput.current?.click()}
-          disabled={laedt}
-          className={sekundaerKnopf}
-        >
-          <Upload size={15} />
-          {laedt ? "Lädt hoch …" : "Bilder/Videos hochladen"}
-        </button>
-        <input
-          ref={dateiInput}
-          type="file"
-          accept="image/*,video/mp4,video/webm,video/quicktime"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            if (e.target.files?.length) void dateienHochladen(e.target.files);
-            e.target.value = "";
-          }}
-        />
+        {gastModus ? (
+          <p className="text-xs text-slate-400">
+            Datei-Uploads brauchen ein Konto (mit Google anmelden) – YouTube-Links
+            funktionieren auch ohne:
+          </p>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => dateiInput.current?.click()}
+              disabled={laedt}
+              className={sekundaerKnopf}
+            >
+              <Upload size={15} />
+              {laedt ? "Lädt hoch …" : "Bilder/Videos hochladen"}
+            </button>
+            <input
+              ref={dateiInput}
+              type="file"
+              accept="image/*,video/mp4,video/webm,video/quicktime"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files?.length) void dateienHochladen(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </>
+        )}
         <div className="flex min-w-52 flex-1 items-center gap-1.5">
           <Link2 size={16} className="shrink-0 text-slate-400" />
           <input

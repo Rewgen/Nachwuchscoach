@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import {
   Download,
-  HardDriveUpload,
+  LogIn,
   LogOut,
   MapPin,
   Search,
@@ -30,10 +30,12 @@ export default function DatenSeite() {
     daten,
     bereit,
     datenImportieren,
-    lokaleDatenUebernehmen,
     einstellungSetzen,
     nutzerEmail,
     abmelden,
+    anmeldenMitGoogle,
+    gastModus,
+    konfigFehlt,
   } = useDaten();
   const dateiInput = useRef<HTMLInputElement>(null);
   const [modus, setModus] = useState<"zusammenfuehren" | "ersetzen">("zusammenfuehren");
@@ -66,20 +68,6 @@ export default function DatenSeite() {
     leser.readAsText(datei);
   }
 
-  async function uebernehmen() {
-    setLaeuft("Übernimmt lokale Daten (inkl. Medien) …");
-    const fehler = await lokaleDatenUebernehmen();
-    setLaeuft(null);
-    setMeldung(
-      fehler
-        ? { text: fehler, fehler: true }
-        : {
-            text: "Lokale Daten übernommen – Übungen, Trainings, Teilnehmer und Medien sind jetzt in deinem Konto.",
-            fehler: false,
-          }
-    );
-  }
-
   async function zuruecksetzen() {
     if (
       window.confirm(
@@ -104,7 +92,11 @@ export default function DatenSeite() {
     <div className="mx-auto max-w-2xl">
       <SeitenKopf
         titel="Daten & Einstellungen"
-        beschreibung="Deine Daten liegen in deinem Konto (Supabase) und stehen auf allen Geräten zur Verfügung."
+        beschreibung={
+          gastModus
+            ? "Ohne Konto: Deine Daten liegen nur auf diesem Gerät."
+            : "Deine Daten liegen in deinem Konto und stehen auf allen Geräten zur Verfügung."
+        }
       />
 
       {laeuft && (
@@ -133,34 +125,34 @@ export default function DatenSeite() {
           </span>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-slate-800">
-              {nutzerEmail ?? "Angemeldet"}
+              {gastModus ? "Ohne Konto" : (nutzerEmail ?? "Angemeldet")}
             </p>
-            <p className="text-xs text-slate-400">Angemeldet mit Google</p>
+            <p className="text-xs text-slate-400">
+              {gastModus
+                ? "Daten nur auf diesem Gerät – kein Abgleich mit anderen Geräten"
+                : "Angemeldet mit Google – Daten werden auf allen Geräten synchronisiert"}
+            </p>
           </div>
-          <button type="button" onClick={abmelden} className={sekundaerKnopf}>
-            <LogOut size={14} />
-            Abmelden
-          </button>
+          {gastModus ? (
+            !konfigFehlt && (
+              <button type="button" onClick={anmeldenMitGoogle} className={primaerKnopf}>
+                <LogIn size={14} />
+                Mit Google anmelden
+              </button>
+            )
+          ) : (
+            <button type="button" onClick={abmelden} className={sekundaerKnopf}>
+              <LogOut size={14} />
+              Abmelden
+            </button>
+          )}
         </div>
-      </div>
-
-      {/* Übernahme alter lokaler Daten */}
-      <div className={`${karteKlasse} mt-4 p-5`}>
-        <h2 className="font-semibold text-slate-900">Alte lokale Daten übernehmen</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Holt die Daten der früheren lokalen Version (SQLite auf diesem PC) einmalig in dein
-          Konto – inklusive hochgeladener Bilder und Videos. Funktioniert nur am PC, auf dem
-          die alte Version lief.
-        </p>
-        <button
-          type="button"
-          onClick={uebernehmen}
-          disabled={!!laeuft}
-          className={`${primaerKnopf} mt-3`}
-        >
-          <HardDriveUpload size={15} />
-          Lokale Daten übernehmen
-        </button>
+        {gastModus && !konfigFehlt && (
+          <p className="mt-2 text-xs text-slate-400">
+            Beim Anmelden werden die Daten dieses Geräts automatisch in dein Konto
+            übernommen.
+          </p>
+        )}
       </div>
 
       {/* Wetter-Ort */}
@@ -220,8 +212,9 @@ export default function DatenSeite() {
           />
         </div>
         <p className="mt-2 text-xs text-slate-400">
-          Die JSON-Sicherung enthält alle Daten außer den Bild-/Videodateien selbst – die
-          liegen im Supabase-Storage deines Kontos.
+          {gastModus
+            ? "Die JSON-Sicherung enthält alle Daten dieses Geräts – praktisch als Backup oder für den Umzug."
+            : "Die JSON-Sicherung enthält alle Daten außer den Bild-/Videodateien selbst – die liegen im Speicher deines Kontos."}
         </p>
       </div>
 

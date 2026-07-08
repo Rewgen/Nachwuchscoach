@@ -1,6 +1,6 @@
 // Zentrale Datentypen der App.
-// Persistenz: SQLite über die API-Routen (app/api/*), Zugriff im Client
-// ausschließlich über lib/store.tsx.
+// Persistenz: Supabase (Postgres + Storage), Zugriff im Client
+// ausschließlich über lib/store.tsx; Gäste speichern lokal (lib/offline.ts).
 
 export type Abschnitt =
   | "aufwaermen"
@@ -205,7 +205,7 @@ export interface PlatzKonfiguration {
   materialDraussen: string[];
 }
 
-/** Gesamtzustand, wie ihn GET /api/daten liefert. */
+/** Gesamtzustand der App (eine Zeile je Eintrag in Supabase bzw. im Gast-Cache). */
 export interface AppDaten {
   uebungen: Uebung[];
   medien: Medium[];

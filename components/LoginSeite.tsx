@@ -1,11 +1,11 @@
 "use client";
 
-import { Activity, TriangleAlert } from "lucide-react";
+import { Activity, Smartphone, TriangleAlert, UserRound } from "lucide-react";
 import { useDaten } from "@/lib/store";
 
-/** Vollbild-Anmeldung (wird gezeigt, solange kein Nutzer angemeldet ist). */
+/** Vollbild-Anmeldung (wird gezeigt, solange weder Konto noch Gast-Modus aktiv sind). */
 export default function LoginSeite() {
-  const { anmeldenMitGoogle, konfigFehlt } = useDaten();
+  const { anmeldenMitGoogle, alsGastFortfahren, konfigFehlt } = useDaten();
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
@@ -17,7 +17,7 @@ export default function LoginSeite() {
           Nachwuchscoach
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          Trainingsplanung für die Kinderleichtathletik – deine Daten, auf allen Geräten.
+          Trainingsplanung für die Kinderleichtathletik.
         </p>
 
         {konfigFehlt ? (
@@ -30,7 +30,8 @@ export default function LoginSeite() {
               Lege eine <code>.env.local</code> mit{" "}
               <code>NEXT_PUBLIC_SUPABASE_URL</code> und{" "}
               <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> an (Vorlage:{" "}
-              <code>.env.local.beispiel</code>) und starte den Server neu.
+              <code>.env.local.beispiel</code>) und starte den Server neu. Ohne
+              Konfiguration ist nur die Nutzung ohne Konto möglich.
             </p>
           </div>
         ) : (
@@ -43,12 +44,32 @@ export default function LoginSeite() {
               <GoogleLogo />
               Mit Google anmelden
             </button>
-            <p className="mt-4 text-xs text-slate-400">
-              Beim ersten Login wird dein Konto automatisch angelegt – inklusive des
-              Übungs-Startbestands.
+            <p className="mt-2 flex items-start gap-1.5 text-left text-xs text-slate-400">
+              <Smartphone size={13} className="mt-0.5 shrink-0" />
+              Mit Konto werden Übungen, Trainings, Favoriten und Teilnehmer gesichert und
+              auf allen Geräten synchronisiert.
             </p>
           </>
         )}
+
+        <div className="my-5 flex items-center gap-3">
+          <span className="h-px flex-1 bg-slate-200" />
+          <span className="text-xs text-slate-400">oder</span>
+          <span className="h-px flex-1 bg-slate-200" />
+        </div>
+
+        <button
+          type="button"
+          onClick={alsGastFortfahren}
+          className="flex w-full items-center justify-center gap-2 rounded-md bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-200"
+        >
+          <UserRound size={15} />
+          Ohne Anmeldung nutzen
+        </button>
+        <p className="mt-2 text-left text-xs text-slate-400">
+          Alle Funktionen, aber die Daten bleiben nur auf diesem Gerät. Wenn du dich
+          später anmeldest, werden sie automatisch in dein Konto übernommen.
+        </p>
       </div>
     </div>
   );

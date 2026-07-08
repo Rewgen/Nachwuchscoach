@@ -15,12 +15,18 @@ des Codes (Bezeichner, Kommentare): **Deutsch**.
 - Client-Setup in `lib/supabase.ts`: Client ist `null`, wenn die Env-Variablen
   fehlen (`.env.local`, Vorlage `.env.local.beispiel`) – die App zeigt dann
   einen Hinweis statt abzustürzen. Login-Gate liegt in
-  `components/AppShell.tsx` (rendert `LoginSeite`, solange kein Nutzer
-  angemeldet ist).
-- **Veraltet, nicht weiter ausbauen**: `lib/server/*` und `app/api/*`
-  (SQLite-Altbestand). Sie existieren nur noch für die einmalige Übernahme
-  lokaler Altdaten (`lokaleDatenUebernehmen` im Store holt `/api/export` und
-  die Mediendateien). Nach erfolgreicher Übernahme beim Nutzer löschen.
+  `components/AppShell.tsx` (rendert `LoginSeite`, solange weder Konto noch
+  Gast-Modus aktiv sind).
+- **Gast-Modus** (App ohne Konto): Flag `nachwuchscoach-gastmodus` +
+  Daten im Offline-Cache unter der Pseudo-User-ID `gast`. Der Store schreibt
+  für Gäste NICHT nach Supabase (`gastRef`-Guard in `schreiben`); der
+  Cache-Effekt persistiert alles. Beim Login werden Gast-Daten mit
+  `hatEigeneInhalte` geprüft, per `datenSchreiben` ins Konto gehoben und der
+  Gast-Cache gelöscht. Datei-Uploads sind Gästen nicht möglich (Storage-RLS),
+  YouTube-Links schon.
+- Die frühere SQLite-Schicht (`lib/server`, `app/api`, better-sqlite3) wurde
+  am 08.07.2026 nach erfolgreicher Datenübernahme entfernt – die App ist ein
+  reiner Static-Build ohne eigene Server-Routen.
 - Detailseiten über Query-Parameter statt dynamischer Routen
   (`?id=…`, `?vorlage=…`, `?jahr=…`); Seiten mit `useSearchParams` brauchen
   `<Suspense>`. **Aus page.tsx nur den Default-Export** – Hilfskomponenten
@@ -73,12 +79,10 @@ des Codes (Bezeichner, Kommentare): **Deutsch**.
   Cache-Fallback auf `/`, `/_next/static/` und Storage-Medien Cache-zuerst.
   Bei SW-Änderungen die VERSION-Konstante hochzählen.
 
+- PWA: `public/manifest.webmanifest` + Icons (`node scripts/icons.mjs`,
+  braucht `npm i --no-save sharp`) → „App installieren“ auf Android.
+
 ## Roadmap (nicht ungefragt bauen)
 
-1. „App installieren“ (Android): PWA-Manifest + Icons (192/512 maskable) +
-   Meta-Tags ergänzen – Service Worker existiert schon. Ausdrücklicher
-   Nutzerwunsch, auf „später“ verschoben.
-2. Alte SQLite-Schicht (`lib/server`, `app/api`) entfernen, sobald Nils die
-   lokale Datenübernahme erledigt hat.
-3. Community-Übungen mit Prüfung/Bewertung, Videos, KI-Planung (Konzept-Datei:
+1. Community-Übungen mit Prüfung/Bewertung, Videos, KI-Planung (Konzept-Datei:
    `C:\Users\nils_\Desktop\Eingangskorb\leichtathletik-app-konzept.md`).
