@@ -1,14 +1,14 @@
 {
-  "name": "Nachwuchscoach – Trainingsplanung Leichtathletik",
+  "name": "Nachwuchscoach – Übungen Kinderleichtathletik",
   "short_name": "Nachwuchscoach",
-  "description": "Übungsdatenbank, Trainingsplaner, Teilnehmerverwaltung, Sportabzeichen und Hallenplaner für Leichtathletiktrainer im Kinder- und Jugendbereich.",
+  "description": "Übungssammlung für Leichtathletiktrainer im Kinder- und Jugendbereich: suchen, filtern, das nächste Training zusammenstellen.",
   "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#f8fafc",
-  "theme_color": "#0369a1",
+  "theme_color": "#ffffff",
   "lang": "de",
   "icons": [
     {

@@ -1,8 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { DatenProvider } from "@/lib/store";
-import AppShell from "@/components/AppShell";
+import { SpeicherProvider } from "@/lib/speicher";
+import Kopfzeile from "@/components/Kopfzeile";
 import ServiceWorkerRegistrierung from "@/components/ServiceWorkerRegistrierung";
 
 const inter = Inter({
@@ -12,9 +12,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Nachwuchscoach – Trainingsplanung Kinderleichtathletik",
+  title: "Nachwuchscoach – Übungen für die Kinderleichtathletik",
   description:
-    "Übungsdatenbank, Trainingsplanung, Trainingslog, Teilnehmerverwaltung und Sportabzeichen für Leichtathletiktrainer im Kinder- und Jugendbereich.",
+    "Übungssammlung für Leichtathletiktrainer im Kinder- und Jugendbereich: suchen, filtern, das nächste Training zusammenstellen.",
   manifest: "/manifest.webmanifest",
   icons: {
     icon: [
@@ -33,18 +33,17 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#0369a1",
+  themeColor: "#ffffff",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="de" className={inter.variable}>
       <body className="min-h-screen antialiased">
-        <DatenProvider>
-          <AppShell>{children}</AppShell>
-        </DatenProvider>
+        <SpeicherProvider>
+          <Kopfzeile />
+          <main className="mx-auto w-full max-w-7xl px-4 pb-24 pt-6 sm:px-6 lg:px-8">{children}</main>
+        </SpeicherProvider>
         <ServiceWorkerRegistrierung />
       </body>
     </html>

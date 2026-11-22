@@ -1,220 +1,75 @@
-// Zentrale Datentypen der App.
-// Persistenz: Supabase (Postgres + Storage), Zugriff im Client
-// ausschließlich über lib/store.tsx; Gäste speichern lokal (lib/offline.ts).
+// Datenmodell der Übungssammlung. Die Übungen sind fest im Code hinterlegt
+// (lib/uebungen), Favoriten und Merkliste liegen im localStorage (lib/speicher.tsx).
 
-export type Abschnitt =
-  | "aufwaermen"
-  | "kennenlernen"
-  | "hauptteil"
-  | "staffeln"
-  | "abschluss";
+export type Stundenteil = "aufwaermen" | "hauptteil" | "abschluss";
 
-export type Disziplin =
+export type Schwerpunkt =
   | "sprint"
+  | "huerden"
   | "sprung"
   | "wurf"
   | "ausdauer"
-  | "koordination";
+  | "koordination"
+  | "kraeftigung";
+
+export type Form = "spiel" | "staffel" | "parcours" | "technik" | "wettkampf";
 
 export type Ort = "drinnen" | "draussen" | "beides";
 
-/** Feste Anlagen, die eine Übung zwingend voraussetzt. */
-export type Anlage = "bahn400" | "sprunggrube" | "wurfanlage";
+/** 1 = ruhig, 2 = mittel, 3 = intensiv */
+export type Intensitaet = 1 | 2 | 3;
+
+export type Punkt = [number, number];
+
+/** Bausteine der Aufbau-Skizze; Koordinaten im Raster 320 × 200. */
+export type SkizzenElement =
+  | { t: "kind"; p: Punkt; team?: 0 | 1 | 2 | 3 }
+  | { t: "trainer"; p: Punkt }
+  | { t: "huetchen"; p: Punkt; farbe?: 0 | 1 | 2 | 3 }
+  | { t: "weg"; pfad: Punkt[]; art?: "lauf" | "sprint" | "locker" | "sprung" | "wurf" }
+  | { t: "linie"; a: Punkt; b: Punkt; art?: "start" | "markierung" }
+  | { t: "reifen"; p: Punkt }
+  | { t: "ball"; p: Punkt; gross?: boolean }
+  | { t: "huerde"; p: Punkt }
+  | {
+      t: "flaeche";
+      p: Punkt;
+      w: number;
+      h: number;
+      art: "matte" | "sand" | "zone" | "kasten" | "weichboden";
+      text?: string;
+    }
+  | { t: "bank"; a: Punkt; b: Punkt }
+  | { t: "leiter"; a: Punkt; b: Punkt }
+  | { t: "seil"; pfad: Punkt[] }
+  | { t: "text"; p: Punkt; s: string };
 
 export interface Uebung {
   id: string;
   titel: string;
-  beschreibung: string;
-  variationen?: string;
-  abschnitt: Abschnitt;
-  disziplinen: Disziplin[];
+  /** Ein Satz für die Karte. */
+  kurz: string;
+  stundenteil: Stundenteil;
+  schwerpunkte: Schwerpunkt[];
+  form: Form;
   ort: Ort;
-  anlagen: Anlage[];
-  /** Benötigtes Material (leer = ohne Material machbar). */
-  material: string[];
-  altersVon: number;
-  altersBis: number;
+  alterVon: number;
+  alterBis: number;
   gruppeMin: number;
-  gruppeMax: number | null;
   /** Ungefähre Dauer in Minuten. */
   dauer: number;
-  favorit: boolean;
-  eigene: boolean;
-  erstelltAm: string;
+  intensitaet: Intensitaet;
+  /** Benötigtes Material (leer = ohne Material machbar). */
+  material: string[];
+  ziel: string;
+  aufbau: string;
+  ablauf: string[];
+  tipps: string[];
+  variationen: string[];
+  skizze: SkizzenElement[];
 }
 
-/** Bild, Videodatei oder YouTube-Link zu einer Übung. */
-export interface Medium {
+export interface MerkEintrag {
   id: string;
-  uebungId: string;
-  typ: "bild" | "video" | "youtube";
-  /** Dateiname im Upload-Ordner (bild/video). */
-  dateiname?: string;
-  /** YouTube-URL (typ youtube). */
-  url?: string;
-  beschriftung?: string;
-  reihenfolge: number;
-}
-
-export type UebungsBewertung = "gut" | "mittel" | "schlecht";
-
-export interface TrainingsEintrag {
-  uebungId: string;
-  dauer: number;
-  notiz?: string;
-  bewertung?: UebungsBewertung;
-}
-
-export interface Reflexion {
-  gut: string;
-  schlecht: string;
-  naechstesMal: string;
-}
-
-export interface Training {
-  id: string;
-  titel: string;
-  datum: string; // YYYY-MM-DD
-  gruppe?: string;
-  teilnehmerAnzahl?: number;
-  ort?: Ort;
-  schwerpunkt?: Disziplin | "";
-  eintraege: TrainingsEintrag[];
-  notizen?: string;
-  status: "geplant" | "abgeschlossen";
-  reflexion?: Reflexion;
-  erstelltAm: string;
-}
-
-export interface Teilnehmer {
-  id: string;
-  name: string;
-  geschlecht?: "m" | "w";
-  geburtsdatum?: string; // YYYY-MM-DD
-  gruppe?: string;
-  notizen?: string;
-  aktiv: boolean;
-  erstelltAm: string;
-}
-
-/** Erfasste Leistung (Zeit, Weite, Höhe, Punkte) eines Teilnehmers. */
-export interface Leistung {
-  id: string;
-  teilnehmerId: string;
-  /** z. B. "30m Sprint", "800m", "Weitsprung", "Schlagballwurf" */
-  disziplin: string;
-  wert: number;
-  einheit: "s" | "min" | "m" | "Pkt.";
-  datum: string; // YYYY-MM-DD
-  bemerkung?: string;
-  quelle: "manuell" | "stoppuhr" | "sportabzeichen";
-}
-
-export interface ChecklistenPunkt {
-  id: string;
-  text: string;
   erledigt: boolean;
-}
-
-export interface Checkliste {
-  id: string;
-  titel: string;
-  punkte: ChecklistenPunkt[];
-  erstelltAm: string;
-}
-
-export interface StoppuhrErgebnis {
-  name: string;
-  teilnehmerId?: string;
-  /** Rundenzeiten in ms (kumulativ ab Start). */
-  runden: number[];
-  /** Endzeit in ms, null = nicht gestoppt. */
-  endzeit: number | null;
-}
-
-export interface StoppuhrSession {
-  id: string;
-  datum: string; // ISO
-  bezeichnung: string;
-  ergebnisse: StoppuhrErgebnis[];
-}
-
-// ===== Sportabzeichen =====
-
-export type DsaGruppe = "schnell" | "ausdauer" | "kraft" | "koord";
-
-/** Ergebnisse eines Teilnehmers für ein Wettkampfjahr. */
-export interface SportabzeichenEintrag {
-  jahr: number;
-  teilnehmerId: string;
-  startNr?: number;
-  /** Versuche als Rohtexte (z. B. "7,4" oder "4:50"), pro Gruppe. */
-  versuche: Record<DsaGruppe, string[]>;
-  schwimmnachweis: boolean;
-}
-
-export interface SportabzeichenEinstellungen {
-  verein: string;
-  veranstaltung: string;
-  datum: string;
-  jahr: number;
-  /** Akzentfarbe der Druckvorlagen (Designvarianten). */
-  farbe: string;
-  reihenfolge: DsaGruppe[];
-  rueckseiteDrucken: boolean;
-  zonentabelle: boolean;
-}
-
-export interface WetterOrt {
-  name: string;
-  lat: number;
-  lon: number;
-}
-
-// ===== Hallen- & Platzplaner =====
-
-export type PlatzTyp = "halle" | "tartanplatz" | "bahn400";
-
-/** Ein platziertes Element auf dem Plan (Koordinaten im 1000×600-Feldraster). */
-export interface PlanElement {
-  id: string;
-  typ: string; // Schlüssel aus dem Element-Katalog
-  x: number;
-  y: number;
-  rotation: number; // Grad
-  skalierung: number; // 1 = Normalgröße
-  beschriftung?: string;
-}
-
-export interface Platzplan {
-  id: string;
-  name: string;
-  platz: PlatzTyp;
-  elemente: PlanElement[];
-  notizen?: string;
-  erstelltAm: string;
-  geaendertAm: string;
-}
-
-/** Einmalige Einrichtung: Welche Plätze gibt es, welches Material ist da? */
-export interface PlatzKonfiguration {
-  konfiguriert: boolean;
-  aktivePlaetze: PlatzTyp[];
-  /** Verfügbare Material-Elementtypen in der Halle bzw. draußen. */
-  materialDrinnen: string[];
-  materialDraussen: string[];
-}
-
-/** Gesamtzustand der App (eine Zeile je Eintrag in Supabase bzw. im Gast-Cache). */
-export interface AppDaten {
-  uebungen: Uebung[];
-  medien: Medium[];
-  trainings: Training[];
-  teilnehmer: Teilnehmer[];
-  leistungen: Leistung[];
-  checklisten: Checkliste[];
-  stoppuhrSessions: StoppuhrSession[];
-  sportabzeichen: SportabzeichenEintrag[];
-  platzplaene: Platzplan[];
-  einstellungen: Record<string, unknown>;
 }

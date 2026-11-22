@@ -1,288 +1,262 @@
 "use client";
 
-import Link from "next/link";
+import { useMemo, useState } from "react";
+import { ArrowUpDown, Search, SlidersHorizontal, X } from "lucide-react";
 import {
-  ArrowRight,
-  Cake,
-  CalendarPlus,
-  ClipboardList,
-  Dumbbell,
-  Lightbulb,
-  Medal,
-  PenLine,
-  ThumbsUp,
-  Timer,
-} from "lucide-react";
-import {
-  datumFormat,
-  datumKurz,
-  disziplinLabel,
-  heuteISO,
-  ortLabel,
-  tageBisGeburtstag,
-} from "@/lib/labels";
-import { materialFuerTraining, useDaten } from "@/lib/store";
-import WetterKarte from "@/components/WetterKarte";
-import { Badge, SeitenKopf, karteKlasse, primaerKnopf, sekundaerKnopf } from "@/components/ui";
+  aktiveFilterAnzahl,
+  filtern,
+  LEERER_FILTER,
+  SCHWERPUNKTE,
+  SORTIERUNGEN,
+  STUNDENTEILE,
+  type Sortierung,
+} from "@/lib/katalog";
+import { useSpeicher } from "@/lib/speicher";
+import type { Stundenteil } from "@/lib/types";
+import { UEBUNGEN } from "@/lib/uebungen";
+import FilterPanel from "@/components/FilterPanel";
+import UebungKarte from "@/components/UebungKarte";
+import { Chip } from "@/components/ui";
 
-export default function StartSeite() {
-  const { daten, bereit } = useDaten();
-  if (!bereit) return null;
+export default function KatalogSeite() {
+  const { filter, setFilter, favoriten, fehlendesMaterial } = useSpeicher();
+  const [panelOffen, setPanelOffen] = useState(false);
 
-  const heute = heuteISO();
-  const naechstes = daten.trainings
-    .filter((t) => t.status === "geplant" && t.datum >= heute)
-    .sort((a, b) => a.datum.localeCompare(b.datum))[0];
-  const offeneReflexionen = daten.trainings
-    .filter((t) => t.status === "geplant" && t.datum < heute)
-    .sort((a, b) => b.datum.localeCompare(a.datum));
-  const letztes = daten.trainings
-    .filter((t) => t.status === "abgeschlossen")
-    .sort((a, b) => b.datum.localeCompare(a.datum))[0];
+  const treffer = useMemo(
+    () => filtern(UEBUNGEN, filter, favoriten, fehlendesMaterial),
+    [filter, favoriten, fehlendesMaterial]
+  );
 
-  const geburtstage = daten.teilnehmer
-    .map((t) => ({ teilnehmer: t, inTagen: tageBisGeburtstag(t.geburtsdatum) }))
-    .filter((x): x is { teilnehmer: (typeof daten.teilnehmer)[0]; inTagen: number } =>
-      x.inTagen !== null && x.inTagen <= 30
-    )
-    .sort((a, b) => a.inTagen - b.inTagen)
-    .slice(0, 6);
+  // Zähler pro Stundenteil: alle Filter außer dem Stundenteil selbst.
+  const proTeil = useMemo(() => {
+    const ohneTeil = filtern(UEBUNGEN, { ...filter, stundenteile: [] }, favoriten, fehlendesMaterial);
+    const z: Record<string, number> = { alle: ohneTeil.length };
+    for (const u of ohneTeil) z[u.stundenteil] = (z[u.stundenteil] ?? 0) + 1;
+    return z;
+  }, [filter, favoriten, fehlendesMaterial]);
+
+  const panelFilter = aktiveFilterAnzahl({ ...filter, stundenteile: [], schwerpunkte: [] });
+  const irgendeinFilter =
+    aktiveFilterAnzahl(filter) > 0 || filter.suche.trim() !== "" || fehlendesMaterial.size > 0;
+
+  const teilWaehlen = (t: Stundenteil | null) =>
+    setFilter((alt) => ({ ...alt, stundenteile: t ? [t] : [] }));
 
   return (
     <div>
-      <SeitenKopf
-        titel="Übersicht"
-        beschreibung={new Date().toLocaleDateString("de-DE", {
-          weekday: "long",
-          day: "numeric",
-          month: "long",
-          year: "numeric",
-        })}
-        aktionen={
-          <>
-            <Link href="/uebungen" className={sekundaerKnopf}>
-              <Dumbbell size={15} />
-              Übung finden
-            </Link>
-            <Link href="/planen" className={primaerKnopf}>
-              <CalendarPlus size={15} />
-              Training planen
-            </Link>
-          </>
-        }
-      />
-
-      {/* Kennzahlen */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <Kennzahl zahl={daten.uebungen.length} label="Übungen" href="/uebungen" />
-        <Kennzahl
-          zahl={daten.uebungen.filter((u) => u.favorit).length}
-          label="Favoriten"
-          href="/uebungen"
-        />
-        <Kennzahl
-          zahl={daten.trainings.filter((t) => t.status === "geplant").length}
-          label="Geplant"
-          href="/trainings"
-        />
-        <Kennzahl
-          zahl={daten.trainings.filter((t) => t.status === "abgeschlossen").length}
-          label="Im Log"
-          href="/trainings"
-        />
-        <Kennzahl zahl={daten.teilnehmer.length} label="Teilnehmer" href="/teilnehmer" />
+      <div className="mb-5 flex flex-col gap-1">
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Übungen</h1>
+        <p className="text-sm text-slate-500">
+          {UEBUNGEN.length} Spiele und Übungen für Kinder- und Jugendleichtathletik – mit Aufbau-Skizze,
+          Ablauf und Variationen.
+        </p>
       </div>
 
-      <div className="mt-4 grid gap-4 lg:grid-cols-3">
-        {/* Nächstes Training */}
-        <div className={`${karteKlasse} p-5 lg:col-span-2`}>
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Nächstes Training
-          </p>
-          {naechstes ? (
-            <>
-              <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h2 className="text-lg font-semibold tracking-tight text-slate-900">
-                  {naechstes.titel}
-                </h2>
-                <span className="text-sm text-slate-500">
-                  {datumFormat(naechstes.datum)}
-                  {naechstes.gruppe ? ` · ${naechstes.gruppe}` : ""}
-                  {naechstes.ort ? ` · ${ortLabel(naechstes.ort)}` : ""}
-                  {naechstes.schwerpunkt
-                    ? ` · ${disziplinLabel(naechstes.schwerpunkt)}`
-                    : ""}
-                </span>
-              </div>
-              {(naechstes.ort ?? "draussen") === "draussen" && (
-                <div className="mt-3">
-                  <WetterKarte datum={naechstes.datum} />
-                </div>
-              )}
-              <div className="mt-3 flex flex-wrap gap-1">
-                {materialFuerTraining(naechstes, daten.uebungen).map((m) => (
-                  <Badge key={m}>{m}</Badge>
+      {/* Suche + Sortierung */}
+      <div className="flex gap-2">
+        <label className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <input
+            type="search"
+            value={filter.suche}
+            onChange={(e) => setFilter((alt) => ({ ...alt, suche: e.target.value }))}
+            placeholder="Suchen: Staffel, Hürden, Reifen, Fangspiel …"
+            className="h-11 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-[15px] text-slate-900 placeholder:text-slate-400 focus:border-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-600/15"
+          />
+        </label>
+        <label className="relative hidden sm:block">
+          <ArrowUpDown className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <select
+            value={filter.sortierung}
+            onChange={(e) =>
+              setFilter((alt) => ({ ...alt, sortierung: e.target.value as Sortierung }))
+            }
+            className="h-11 appearance-none rounded-lg border border-slate-200 bg-white pl-9 pr-8 text-sm text-slate-700 focus:border-sky-600 focus:outline-none"
+            aria-label="Sortierung"
+          >
+            {SORTIERUNGEN.map((s) => (
+              <option key={s.wert} value={s.wert}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => setPanelOffen(true)}
+          className="inline-flex h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-700 lg:hidden"
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+          Filter
+          {panelFilter > 0 && (
+            <span className="rounded-full bg-sky-700 px-1.5 text-[11px] font-semibold text-white">
+              {panelFilter}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* Stundenteil */}
+      <div className="mt-4 flex gap-1 overflow-x-auto border-b border-slate-200">
+        <TeilTab aktiv={filter.stundenteile.length === 0} onClick={() => teilWaehlen(null)} anzahl={proTeil.alle ?? 0}>
+          Alle
+        </TeilTab>
+        {STUNDENTEILE.map((t) => (
+          <TeilTab
+            key={t.wert}
+            aktiv={filter.stundenteile.includes(t.wert)}
+            onClick={() => teilWaehlen(t.wert)}
+            anzahl={proTeil[t.wert] ?? 0}
+          >
+            {t.label}
+          </TeilTab>
+        ))}
+      </div>
+
+      {/* Schwerpunkte */}
+      <div className="-mx-4 mt-3 flex gap-1.5 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:px-0">
+        {SCHWERPUNKTE.map((s) => {
+          const aktiv = filter.schwerpunkte.includes(s.wert);
+          return (
+            <Chip
+              key={s.wert}
+              aktiv={aktiv}
+              onClick={() =>
+                setFilter((alt) => ({
+                  ...alt,
+                  schwerpunkte: aktiv
+                    ? alt.schwerpunkte.filter((x) => x !== s.wert)
+                    : [...alt.schwerpunkte, s.wert],
+                }))
+              }
+            >
+              <span className={`h-2 w-2 rounded-full ${s.farbe} ${aktiv ? "ring-2 ring-white/70" : ""}`} />
+              {s.label}
+            </Chip>
+          );
+        })}
+      </div>
+
+      <div className="mt-6 flex gap-8">
+        <aside className="hidden w-60 shrink-0 lg:block">
+          <div className="sticky top-20">
+            <FilterPanel />
+          </div>
+        </aside>
+
+        <section className="min-w-0 flex-1">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <p className="text-sm text-slate-500 tabular">
+              <span className="font-semibold text-slate-900">{treffer.length}</span>{" "}
+              {treffer.length === 1 ? "Übung" : "Übungen"}
+            </p>
+            <div className="flex items-center gap-2">
+              <select
+                value={filter.sortierung}
+                onChange={(e) =>
+                  setFilter((alt) => ({ ...alt, sortierung: e.target.value as Sortierung }))
+                }
+                className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 sm:hidden"
+                aria-label="Sortierung"
+              >
+                {SORTIERUNGEN.map((s) => (
+                  <option key={s.wert} value={s.wert}>
+                    {s.label}
+                  </option>
                 ))}
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Link href={`/trainings/ansicht?id=${naechstes.id}`} className={primaerKnopf}>
-                  Ansehen & drucken
-                </Link>
-                <Link href={`/planen?id=${naechstes.id}`} className={sekundaerKnopf}>
-                  Bearbeiten
-                </Link>
-              </div>
-            </>
-          ) : (
-            <div className="mt-2">
-              <p className="text-slate-600">Kein Training geplant.</p>
-              <p className="mt-0.5 text-sm text-slate-400">
-                In fünf Minuten steht dein nächstes Training – Übungen merken oder den
-                Generator nutzen.
+              </select>
+              {irgendeinFilter && (
+                <button
+                  type="button"
+                  onClick={() => setFilter({ ...LEERER_FILTER, sortierung: filter.sortierung })}
+                  className="inline-flex items-center gap-1 text-sm font-medium text-sky-700 hover:text-sky-900"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Zurücksetzen
+                </button>
+              )}
+            </div>
+          </div>
+
+          {treffer.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-16 text-center">
+              <p className="font-medium text-slate-900">Keine Übung passt zu diesen Filtern.</p>
+              <p className="mt-1 text-sm text-slate-500">
+                Filter lockern oder bei „Vorhandenes Material“ prüfen, ob zu viel abgewählt ist.
               </p>
-              <Link href="/planen" className={`${primaerKnopf} mt-3`}>
-                <CalendarPlus size={15} />
-                Jetzt planen
-              </Link>
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3">
+              {treffer.map((u) => (
+                <UebungKarte key={u.id} u={u} />
+              ))}
             </div>
           )}
-        </div>
-
-        {/* Geburtstage */}
-        <div className={`${karteKlasse} p-5`}>
-          <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
-            <Cake size={13} className="text-pink-500" />
-            Geburtstage (30 Tage)
-          </p>
-          {geburtstage.length === 0 ? (
-            <p className="mt-2 text-sm text-slate-400">
-              {daten.teilnehmer.length === 0
-                ? "Lege Teilnehmer mit Geburtsdatum an, dann erinnert dich die App hier."
-                : "Keine Geburtstage in den nächsten 30 Tagen."}
-            </p>
-          ) : (
-            <ul className="mt-2 space-y-1.5">
-              {geburtstage.map(({ teilnehmer, inTagen }) => (
-                <li key={teilnehmer.id} className="flex items-baseline gap-2 text-sm">
-                  <Link
-                    href={`/teilnehmer/profil?id=${teilnehmer.id}`}
-                    className="font-medium text-slate-800 hover:text-sky-800"
-                  >
-                    {teilnehmer.name}
-                  </Link>
-                  <span
-                    className={`ml-auto whitespace-nowrap text-xs ${
-                      inTagen === 0 ? "font-semibold text-pink-600" : "text-slate-400"
-                    }`}
-                  >
-                    {inTagen === 0
-                      ? "heute!"
-                      : inTagen === 1
-                        ? "morgen"
-                        : `in ${inTagen} Tagen`}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        </section>
       </div>
 
-      {/* Offene Reflexionen */}
-      {offeneReflexionen.length > 0 && (
-        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
-          <p className="flex items-center gap-1.5 text-sm font-medium text-amber-900">
-            <PenLine size={15} />
-            {offeneReflexionen.length === 1
-              ? "Eine vergangene Einheit wartet auf deine Reflexion:"
-              : `${offeneReflexionen.length} vergangene Einheiten warten auf deine Reflexion:`}
-          </p>
-          <ul className="mt-1.5 space-y-1">
-            {offeneReflexionen.slice(0, 3).map((t) => (
-              <li key={t.id}>
-                <Link
-                  href={`/trainings/ansicht?id=${t.id}`}
-                  className="text-sm font-medium text-amber-950 underline-offset-2 hover:underline"
-                >
-                  {datumKurz(t.datum)} – {t.titel}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Zuletzt im Log */}
-      {letztes && (
-        <div className={`${karteKlasse} mt-4 p-5`}>
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Zuletzt im Log
-          </p>
-          <Link
-            href={`/trainings/ansicht?id=${letztes.id}`}
-            className="mt-1 inline-block font-semibold text-slate-900 hover:text-sky-800"
-          >
-            {letztes.titel}{" "}
-            <span className="text-sm font-normal text-slate-400">
-              · {datumFormat(letztes.datum)}
-            </span>
-          </Link>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            {letztes.reflexion?.gut && (
-              <p className="flex items-start gap-1.5 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-                <ThumbsUp size={13} className="mt-0.5 shrink-0" />
-                {letztes.reflexion.gut}
-              </p>
-            )}
-            {letztes.reflexion?.naechstesMal && (
-              <p className="flex items-start gap-1.5 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800">
-                <Lightbulb size={13} className="mt-0.5 shrink-0" />
-                {letztes.reflexion.naechstesMal}
-              </p>
-            )}
+      {panelOffen && (
+        <div className="fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true" aria-label="Filter">
+          <button
+            type="button"
+            className="absolute inset-0 bg-slate-900/30"
+            onClick={() => setPanelOffen(false)}
+            aria-label="Filter schließen"
+          />
+          <div className="absolute inset-y-0 right-0 flex w-[88%] max-w-sm flex-col bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <span className="font-semibold text-slate-900">Filter</span>
+              <button
+                type="button"
+                onClick={() => setPanelOffen(false)}
+                className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
+                aria-label="Schließen"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-4 py-5">
+              <FilterPanel />
+            </div>
+            <div className="border-t border-slate-200 p-4">
+              <button
+                type="button"
+                onClick={() => setPanelOffen(false)}
+                className="h-11 w-full rounded-lg bg-sky-700 text-sm font-semibold text-white hover:bg-sky-800"
+              >
+                {treffer.length} {treffer.length === 1 ? "Übung" : "Übungen"} anzeigen
+              </button>
+            </div>
           </div>
         </div>
       )}
-
-      {/* Schnellzugriffe */}
-      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <SchnellLink href="/sportabzeichen" icon={<Medal size={17} />} label="Sportabzeichen" />
-        <SchnellLink href="/stoppuhr" icon={<Timer size={17} />} label="Stoppuhr" />
-        <SchnellLink href="/trainings" icon={<ClipboardList size={17} />} label="Trainingslog" />
-        <SchnellLink href="/teilnehmer" icon={<ArrowRight size={17} />} label="Teilnehmer" />
-      </div>
     </div>
   );
 }
 
-function Kennzahl({ zahl, label, href }: { zahl: number; label: string; href: string }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-lg border border-slate-200 bg-white px-4 py-3 transition-colors hover:border-slate-300"
-    >
-      <p className="tabular text-2xl font-semibold tracking-tight text-slate-900">{zahl}</p>
-      <p className="text-xs font-medium text-slate-500">{label}</p>
-    </Link>
-  );
-}
-
-function SchnellLink({
-  href,
-  icon,
-  label,
+function TeilTab({
+  aktiv,
+  onClick,
+  anzahl,
+  children,
 }: {
-  href: string;
-  icon: React.ReactNode;
-  label: string;
+  aktiv: boolean;
+  onClick: () => void;
+  anzahl: number;
+  children: React.ReactNode;
 }) {
   return (
-    <Link
-      href={href}
-      className="flex items-center gap-2.5 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition-colors hover:border-sky-300 hover:text-sky-800"
+    <button
+      type="button"
+      onClick={onClick}
+      className={`-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+        aktiv
+          ? "border-sky-700 text-slate-900"
+          : "border-transparent text-slate-500 hover:text-slate-800"
+      }`}
     >
-      <span className="text-sky-700">{icon}</span>
-      {label}
-    </Link>
+      {children}
+      <span className={`text-xs tabular ${aktiv ? "text-sky-700" : "text-slate-400"}`}>{anzahl}</span>
+    </button>
   );
 }

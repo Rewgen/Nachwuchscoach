@@ -1,14 +1,12 @@
 // Nachwuchscoach Service Worker: macht die App-Oberfläche offline nutzbar.
 // - Seiten (Navigationen): Netz zuerst, sonst Cache, sonst Startseite
 // - Next.js-Assets (gehashte Dateien): Cache zuerst
-// - Supabase-Storage-Medien (Bilder/Videos): Cache zuerst
-// Die Nutzdaten selbst cached die App-Schicht (lib/offline.ts), nicht der SW.
+// Favoriten und Merkliste liegen im localStorage und brauchen keinen Cache.
 
-const VERSION = "v2";
+const VERSION = "v3";
 const CACHE_SEITEN = `nachwuchscoach-seiten-${VERSION}`;
 const CACHE_STATISCH = `nachwuchscoach-statisch-${VERSION}`;
-const CACHE_MEDIEN = `nachwuchscoach-medien-${VERSION}`;
-const ALLE_CACHES = [CACHE_SEITEN, CACHE_STATISCH, CACHE_MEDIEN];
+const ALLE_CACHES = [CACHE_SEITEN, CACHE_STATISCH];
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -62,12 +60,6 @@ self.addEventListener("fetch", (ereignis) => {
       url.pathname === "/manifest.webmanifest")
   ) {
     ereignis.respondWith(cacheZuerst(CACHE_STATISCH, anfrage));
-    return;
-  }
-
-  // Öffentliche Supabase-Storage-Medien: Cache zuerst.
-  if (url.pathname.includes("/storage/v1/object/public/")) {
-    ereignis.respondWith(cacheZuerst(CACHE_MEDIEN, anfrage));
     return;
   }
 });
