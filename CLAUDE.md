@@ -44,6 +44,8 @@ Kommentare): **Deutsch**.
 ## Betrieb
 
 - Live-Site: https://nachwuchscoach.netlify.app (Deploy bei Push auf `main`).
+- **Workflow (Wunsch des Nutzers):** Fertige Änderungen nach Build-Check
+  immer sofort auf `main` pushen – keine Feature-Branches/PRs abwarten.
 - `npm run build` NIE bei laufendem `next dev` ausführen (zerschießt dessen
   `.next`-Cache → 500er; Dev-Server danach neu starten).
 - `public/sw.js` (nur Produktion): Navigationen Netz-zuerst mit Cache-Fallback,
